@@ -142,6 +142,17 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
         names = json.loads(content_clean)
         if isinstance(names, list) and len(names) > 0:
             name = str(names[0]).strip()
+            
+            # Guard against LLM hallucinating example names from system prompt instructions
+            hallucination_examples = ["siti nor hajar sheikh obit", "yan ling", "tan wei shen"]
+            if name.lower() in hallucination_examples:
+                # Clean alphabetic only check to prevent matching on tiny partial gibberish
+                clean_ocr = re.sub(r'[^a-zA-Z]', '', ocr_text).lower()
+                clean_name = re.sub(r'[^a-zA-Z]', '', name).lower()
+                if clean_name not in clean_ocr:
+                    print(f"[OCR] Guard: Rejected hallucinated name '{name}' not found in Raw OCR text.")
+                    return None
+            
             if name:
                 return name
         return None
@@ -151,64 +162,104 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
         return None
 
 
+def is_plausible_layout(text: str) -> bool:
+    """
+    Check if the raw OCR text contains common layout keywords.
+    If it contains at least one of these keywords, it's a plausible orientation.
+    """
+    keywords = [
+        "member", "since", "bites", "profile", "setting", "history", 
+        "transaction", "contact", "faq", "voucher", "purveyor", "version",
+        "account", "loyalty", "rewards", "points"
+    ]
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in keywords)
+
+
 def process_image(image_path: str) -> Tuple[Optional[str], str]:
     """
     OCR & Extraction Pipeline:
       1. Run EasyOCR on the FULL image (no cropping).
-      2. Call DeepSeek API on the full raw text using layout-aware prompt.
-      3. Fall back to regex if needed.
-      4. If failed, rotate 180 degrees (upside down) and retry.
+      2. If layout is plausible, attempt extraction (LLM + Regex).
+      3. If failed or layout not plausible, try rotations (180, 270, 90) in order.
+      4. Returns the extracted name and the best raw text.
     """
     try:
-        raw_text = extract_text_from_image(image_path)
-        if not raw_text.strip():
-            return None, "Empty text extracted from image."
+        from PIL import Image
+        import os
+    except ImportError:
+        pass
 
-        # 1. Attempt LLM extraction on the full text
-        username = extract_username_with_llm(raw_text)
-        
-        # 2. Fall back to regex if LLM failed
-        if not username:
-            username = extract_username_fallback(raw_text)
-
-        # 3. If extraction failed, try rotating the image 180 degrees (upside down) and retrying
-        if not username:
-            print(f"[OCR] Username extraction failed. Trying 180 degree rotation fallback...")
-            try:
-                from PIL import Image
-                import os
-                
+    best_text = ""
+    
+    # We will try orientations in this order:
+    # 0 (original), 180 (upside down), 270 (90 deg clockwise), 90 (90 deg counter-clockwise)
+    orientations = [0, 180, 270, 90]
+    
+    for angle in orientations:
+        temp_rotated_path = None
+        try:
+            if angle == 0:
+                current_path = image_path
+            else:
                 dir_name = os.path.dirname(image_path)
                 base_name = os.path.basename(image_path)
-                temp_rotated_path = os.path.join(dir_name, "rotated_" + base_name)
+                temp_rotated_path = os.path.join(dir_name, f"rotated_{angle}_{base_name}")
                 
                 with Image.open(image_path) as img:
-                    rotated_img = img.rotate(180)
+                    # PIL rotate uses counter-clockwise angle.
+                    # 180 = upside down
+                    # 270 = rotates 270 deg counter-clockwise (which is 90 deg clockwise)
+                    # 90 = rotates 90 deg counter-clockwise
+                    rotated_img = img.rotate(angle, expand=True)
                     rotated_img.save(temp_rotated_path)
+                current_path = temp_rotated_path
+            
+            raw_text = extract_text_from_image(current_path)
+            if angle == 0:
+                best_text = raw_text
                 
-                print(f"[OCR] Rotated image saved to: {temp_rotated_path}. Running OCR on rotated image.")
-                rotated_raw_text = extract_text_from_image(temp_rotated_path)
-                
-                # Clean up the temp rotated image file
+            # Clean up temp file immediately
+            if temp_rotated_path:
                 try:
                     if os.path.exists(temp_rotated_path):
                         os.remove(temp_rotated_path)
                 except Exception as cleanup_err:
-                    print(f"[OCR] Temp rotated image cleanup error: {cleanup_err}")
+                    print(f"[OCR] Temp rotated image cleanup error for angle {angle}: {cleanup_err}")
+            
+            if not raw_text.strip():
+                continue
                 
-                if rotated_raw_text.strip():
-                    rotated_username = extract_username_with_llm(rotated_raw_text)
-                    if not rotated_username:
-                        rotated_username = extract_username_fallback(rotated_raw_text)
-                    
-                    if rotated_username:
-                        print(f"[OCR] Successfully extracted username '{rotated_username}' from rotated image!")
-                        return rotated_username, rotated_raw_text
-            except Exception as rotation_err:
-                print(f"[OCR] Rotation fallback failed: {rotation_err}")
+            # Heuristic check: does it look like a valid vertical orientation?
+            # If yes, we try extracting.
+            if is_plausible_layout(raw_text):
+                print(f"[OCR] Orientation {angle}° looks plausible. Extracting...")
+                username = extract_username_with_llm(raw_text)
+                if not username:
+                    username = extract_username_fallback(raw_text)
+                
+                if username:
+                    print(f"[OCR] Successful extraction at {angle}°: '{username}'")
+                    return username, raw_text
+            else:
+                print(f"[OCR] Orientation {angle}° raw text layout is not plausible. Skipping LLM.")
+                # Save it as best text if it has more length than previous
+                if len(raw_text) > len(best_text):
+                    best_text = raw_text
 
-        return username, raw_text
-    except Exception as e:
-        error_msg = f"OCR pipeline error: {str(e)}"
-        print(f"[OCR] {error_msg}")
-        return None, error_msg
+        except Exception as err:
+            print(f"[OCR] Rotation error for angle {angle}: {err}")
+            if temp_rotated_path:
+                try:
+                    if os.path.exists(temp_rotated_path):
+                        os.remove(temp_rotated_path)
+                except:
+                    pass
+
+    # Final fallback: if no rotation was deemed "plausible" enough to succeed,
+    # run LLM extraction on the raw text of the original 0° image anyway just in case.
+    print("[OCR] All rotation heuristics failed. Running final fallback extraction on original 0° text.")
+    username = extract_username_with_llm(best_text)
+    if not username:
+        username = extract_username_fallback(best_text)
+    return username, best_text
