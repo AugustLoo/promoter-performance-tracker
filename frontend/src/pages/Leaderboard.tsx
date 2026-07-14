@@ -14,7 +14,7 @@ import { fetchLeaderboard } from "../utils/api";
 import { usePolling } from "../hooks/usePolling";
 
 // Q-version Q-face girl cartoon avatar (Jessica / 1st place)
-const JessicaAvatar = () => (
+export const JessicaAvatar = () => (
   <svg viewBox="0 0 100 100" className="avatar-svg">
     <circle cx="50" cy="50" r="48" fill="#fce7f3" stroke="#fbcfe8" strokeWidth="2"/>
     <path d="M20,48 C15,18 85,18 80,48 C85,68 80,82 80,82 L20,82 C20,82 15,68 20,48 Z" fill="#653b1b"/>
@@ -37,7 +37,7 @@ const JessicaAvatar = () => (
 );
 
 // Q-version Q-face hoodie boy cartoon avatar (Alex / 2nd place)
-const AlexAvatar = () => (
+export const AlexAvatar = () => (
   <svg viewBox="0 0 100 100" className="avatar-svg">
     <circle cx="50" cy="50" r="48" fill="#e0f2fe" stroke="#bae6fd" strokeWidth="2"/>
     <path d="M22,46 C18,20 82,20 78,46 C72,34 60,35 50,38 C40,35 28,34 22,46 Z" fill="#582f0e"/>
@@ -52,7 +52,7 @@ const AlexAvatar = () => (
 );
 
 // Q-version Q-face hair bun girl cartoon avatar (Samantha / 3rd place)
-const SamanthaAvatar = () => (
+export const SamanthaAvatar = () => (
   <svg viewBox="0 0 100 100" className="avatar-svg">
     <circle cx="50" cy="50" r="48" fill="#ffe5d9" stroke="#fec5bb" strokeWidth="2"/>
     <circle cx="50" cy="22" r="16" fill="#4a2c11"/>
@@ -66,38 +66,7 @@ const SamanthaAvatar = () => (
   </svg>
 );
 
-const renderAvatar = (rank: number) => {
-  if (rank === 1) return <JessicaAvatar />;
-  if (rank === 2) return <AlexAvatar />;
-  if (rank === 3) return <SamanthaAvatar />;
-  
-  // Ranks 4+ alternating Q-version boy/girl avatars
-  if (rank % 2 === 0) {
-    return (
-      <svg viewBox="0 0 100 100" className="avatar-svg">
-        <circle cx="50" cy="50" r="48" fill="#e0f2fe" stroke="#bae6fd" strokeWidth="1.5"/>
-        <circle cx="50" cy="50" r="22" fill="#ffedd5"/>
-        <path d="M30,35 Q50,25 70,35 Q60,25 50,28 Q40,25 30,35 Z" fill="#78350f"/>
-        <circle cx="42" cy="48" r="2.5" fill="#1e293b"/>
-        <circle cx="58" cy="48" r="2.5" fill="#1e293b"/>
-        <path d="M45,56 Q50,60 55,56" stroke="#1e293b" strokeWidth="2" fill="none"/>
-        <path d="M32,75 C32,75 40,84 50,84 C60,84 68,75 68,75 L62,95 L38,95 Z" fill="#3b82f6"/>
-      </svg>
-    );
-  } else {
-    return (
-      <svg viewBox="0 0 100 100" className="avatar-svg">
-        <circle cx="50" cy="50" r="48" fill="#fce7f3" stroke="#fbcfe8" strokeWidth="1.5"/>
-        <circle cx="50" cy="50" r="22" fill="#ffedd5"/>
-        <path d="M28,36 Q50,26 72,36 Q60,28 50,30 Q40,28 28,36 Z" fill="#4a2c11"/>
-        <circle cx="42" cy="48" r="2.5" fill="#1e293b"/>
-        <circle cx="58" cy="48" r="2.5" fill="#1e293b"/>
-        <path d="M45,56 Q50,60 55,56" stroke="#1e293b" strokeWidth="2" fill="none"/>
-        <path d="M32,75 C32,75 40,84 50,84 C60,84 68,75 68,75 L62,95 L38,95 Z" fill="#ec4899"/>
-      </svg>
-    );
-  }
-};
+
 
 export default function Leaderboard() {
   const { data, loading, error } = usePolling(fetchLeaderboard, 5000);
@@ -123,7 +92,6 @@ export default function Leaderboard() {
 
   const topPromoterName = entries[0].promoter_name;
   const topPromoterCount = entries[0].valid_count;
-  const maxValidCount = entries[0].valid_count;
 
   return (
     <div className="page">
