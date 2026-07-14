@@ -11,7 +11,7 @@ Tables:
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text,
-    DateTime, ForeignKey, CheckConstraint, Index
+    DateTime, ForeignKey, CheckConstraint, Index, Float, Boolean
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -65,6 +65,18 @@ class Submission(Base):
     image_path = Column(String(500), nullable=False)         # Relative to uploads/
     status = Column(String(20), nullable=False)
     ocr_raw_text = Column(Text, nullable=True)               # Full OCR output for debugging
+    
+    # Performance logging columns
+    ocr_time = Column(Float, nullable=True)
+    rule_time = Column(Float, nullable=True)
+    matching_time = Column(Float, nullable=True)
+    total_time = Column(Float, nullable=True)
+    ocr_confidence = Column(Float, nullable=True)
+    candidate_score = Column(Integer, nullable=True)
+    matched_name = Column(String(100), nullable=True)
+    similarity = Column(Float, nullable=True)
+    llm_used = Column(Boolean, default=False)
+    
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (

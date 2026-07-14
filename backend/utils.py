@@ -64,23 +64,33 @@ def generate_filename(username: str | None) -> str:
 
 def save_uploaded_image(source_path: Path, dest_folder: Path, filename: str) -> str:
     """
-    Save an image to the destination folder with JPEG compression.
-    Falls back to raw copy if Pillow can't process the image.
-
-    Returns:
-        Relative path from UPLOAD_DIR (for storage in database).
+    Save an image to the destination folder with downscaling (max side 1600px)
+    and JPEG compression (quality 80% to optimize space).
+    Falls back to raw copy if Pillow fails.
     """
     dest_path = dest_folder / filename
 
     try:
         with Image.open(source_path) as img:
+            # Downscale if longest side is > 1600px
+            width, height = img.size
+            if max(width, height) > 1600:
+                if width > height:
+                    new_w = 1600
+                    new_h = int(height * (1600 / width))
+                else:
+                    new_h = 1600
+                    new_w = int(width * (1600 / height))
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            
             # Convert RGBA/palette images to RGB for JPEG compatibility
             if img.mode in ("RGBA", "P", "LA"):
                 img = img.convert("RGB")
-            # Save with moderate JPEG compression (quality=85 is a good balance)
-            img.save(dest_path, "JPEG", quality=85, optimize=True)
-    except Exception:
-        # Fallback: copy the raw file if Pillow fails (e.g., unsupported format)
+            
+            # Save as JPEG with 80% quality
+            img.save(dest_path, "JPEG", quality=80, optimize=True)
+    except Exception as e:
+        print(f"[Utils] Image compression failed: {e}. Copying raw file.")
         shutil.copy2(source_path, dest_path)
 
     # Return path relative to UPLOAD_DIR for database storage

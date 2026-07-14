@@ -1,22 +1,13 @@
-"""
-OCR Service — EasyOCR and DeepSeek LLM username extraction.
-
-We switch back to EasyOCR (deep learning scene text detection) because Tesseract
-struggles heavily with screen moiré patterns, low contrast, and photo angles.
-EasyOCR CRAFT model reads screen-photo text with extreme robustness.
-
-The pipeline:
-  1. Run EasyOCR on the full screenshot.
-  2. Send the raw text to DeepSeek API with a highly intelligent layout-aware prompt.
-  3. Fall back to local Regex pattern matching if the API fails.
-"""
-
-import json
+import os
 import re
-from typing import Optional, Tuple
-
-import easyocr
+import time
+import json
+import numpy as np
+import cv2
+from PIL import Image, ImageEnhance
+from typing import Optional, Tuple, Dict, Any, List
 from openai import OpenAI
+from rapidocr_onnxruntime import RapidOCR
 
 from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
 
@@ -26,72 +17,113 @@ client = OpenAI(
     base_url=DEEPSEEK_BASE_URL,
 )
 
-# Lazy-loaded singleton EasyOCR reader
-_reader: Optional[easyocr.Reader] = None
+# Lazy-loaded singleton RapidOCR reader
+_ocr_engine: Optional[RapidOCR] = None
 
+def get_ocr_engine() -> RapidOCR:
+    """Return the singleton RapidOCR engine instance."""
+    global _ocr_engine
+    if _ocr_engine is None:
+        print("[OCR] Initializing RapidOCR engine...")
+        _ocr_engine = RapidOCR()
+        print("[OCR] RapidOCR engine initialized successfully.")
+    return _ocr_engine
 
-def get_reader() -> easyocr.Reader:
+# List of common layout/header/system text to penalize
+PENALIZED_WORDS = {
+    "profile", "my profile", "settings", "edit", "logout", "back", "home", 
+    "me", "faq", "faqs", "contact", "support", "help", "version", "transaction",
+    "history", "points", "rewards", "vouchers", "voucher", "account", "details",
+    "member", "status", "level", "loyalty", "successful", "success", "fail", 
+    "failed", "register", "registration", "welcome", "signups", "signup", "promoter",
+    "bites", "purveyor", "food", "notification"
+}
+
+def preprocess_image(image_path: str) -> Tuple[np.ndarray, float]:
     """
-    Return the singleton EasyOCR reader instance.
+    Perform advanced image preprocessing using OpenCV:
+      1. Resize so that the longest edge is at most 1600px.
+      2. Convert to grayscale.
+      3. Apply Contrast Limited Adaptive Histogram Equalization (CLAHE) for contrast.
+      4. Perform Deskewing to straighten text.
     """
-    global _reader
-    if _reader is None:
-        print("[OCR] Initializing EasyOCR reader (supports English + Latin scripts)...")
-        _reader = easyocr.Reader(["en"])
-        print("[OCR] EasyOCR reader initialized successfully.")
-    return _reader
+    start_time = time.time()
+    
+    # Read image using OpenCV
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"Failed to read image from path: {image_path}")
+        
+    h, w = img.shape[:2]
+    
+    # 1. Resize to max side 1600px
+    max_side = 1600
+    if max(h, w) > max_side:
+        if w > h:
+            new_w = max_side
+            new_h = int(h * (max_side / w))
+        else:
+            new_h = max_side
+            new_w = int(w * (max_side / h))
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = new_h, new_w
 
+    # 2. Grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def extract_text_from_image(image_path: str) -> str:
-    """
-    Run EasyOCR on the FULL image.
-    """
-    reader = get_reader()
-    # detail=0 returns just text strings; paragraph=True groups nearby text blocks
-    results = reader.readtext(image_path, detail=0, paragraph=True)
-    return "\n".join(results)
+    # 3. Contrast enhancement using CLAHE
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    contrast = clahe.apply(gray)
 
+    # 4. Deskewing
+    # Find dark text pixels to detect rotation
+    coords = np.column_stack(np.where(contrast < 100))
+    angle = 0.0
+    if len(coords) > 0:
+        # minAreaRect returns angle in range [-90, 0)
+        rect = cv2.minAreaRect(coords)
+        angle = rect[-1]
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+            
+        # Only rotate if the angle is significant but within bounds of a snapshot tilt (0.5 to 15 deg)
+        if 0.5 <= abs(angle) <= 15:
+            center = (w // 2, h // 2)
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            contrast = cv2.warpAffine(
+                contrast, M, (w, h), 
+                flags=cv2.INTER_CUBIC, 
+                borderMode=cv2.BORDER_REPLICATE
+            )
+            
+    preprocess_time = time.time() - start_time
+    print(f"[OCR] Preprocessed image in {preprocess_time:.3f}s. Deskew angle: {angle:.2f}°")
+    return contrast, preprocess_time
 
-def extract_username_fallback(ocr_text: str) -> Optional[str]:
-    """
-    Local Regex-based fallback pattern matching on the full text if DeepSeek API fails.
-    """
-    if not ocr_text or not ocr_text.strip():
-        return None
-
-    # Pattern 1: @username
-    match = re.search(r"@([A-Za-z0-9_.\-]{3,30})", ocr_text)
-    if match:
-        return match.group(1)
-
-    # Pattern 2: Label-value pairs (Username, Nickname, Name, ID, display name, etc.)
-    match = re.search(
-        r"(?:username|user\s*name|user\s*id|user|display\s*name|nick\s*name|id|account|name|nama)"
-        r"\s*[:：]\s*"
-        r"([A-Za-z0-9\s_.\-]{3,50})",
-        ocr_text,
-        re.IGNORECASE,
-    )
-    if match:
-        return match.group(1).strip()
-
-    # Pattern 3: Standalone name-like line (prefer lines containing letters and spaces)
-    # Search the top half of the text in fallback
-    lines = [line.strip() for line in ocr_text.strip().split("\n") if line.strip()]
-    for line in lines[:8]:  # Limit fallback search to first 8 non-empty lines
-        if 3 <= len(line) <= 50 and not any(char.isdigit() for char in line):
-            if re.match(r"^[A-Za-z][A-Za-z\s_.\-]{2,49}$", line):
-                # Avoid capturing common layout headers
-                if line.lower() not in ["profile", "my profile", "settings", "home", "me", "bites"]:
-                    return line
-
-    return None
-
+def run_rapid_ocr(processed_img: np.ndarray) -> Tuple[List[Dict[str, Any]], float]:
+    """Run RapidOCR on the preprocessed image array."""
+    start_time = time.time()
+    engine = get_ocr_engine()
+    
+    # RapidOCR accepts numpy arrays directly
+    result, elapse = engine(processed_img)
+    
+    ocr_lines = []
+    if result:
+        for box, text, confidence in result:
+            ocr_lines.append({
+                "text": text.strip(),
+                "confidence": float(confidence),
+                "box": box
+            })
+            
+    ocr_time = time.time() - start_time
+    return ocr_lines, ocr_time
 
 def extract_username_with_llm(ocr_text: str) -> Optional[str]:
-    """
-    Call DeepSeek API to parse the full OCR text and intelligently extract the registered user's name.
-    """
+    """Fallback: Call DeepSeek LLM to extract the username from OCR raw text."""
     system_prompt = (
         "You are an expert, highly intelligent parser for mobile app profile screenshots. "
         "You specialize in identifying registered user names from raw OCR text by understanding the screen layout context."
@@ -101,17 +133,11 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
         "Analyze the following full raw OCR text extracted from a mobile app profile screenshot.\n"
         "Your task is to identify and extract the actual registered user's name or username.\n\n"
         "INSTRUCTIONS:\n"
-        "1. Understand Layout Context: App profile screens typically contain:\n"
-        "   - An app/brand name at the top (e.g., 'bites', 'The Food Purveyor').\n"
-        "   - A profile section showing the User's Name (e.g., Malay names like 'Siti Nor Hajar Sheikh Obit', Chinese names like 'Yan Ling' or 'Tan Wei Shen', Indian names, or English names).\n"
-        "   - The name is usually followed immediately by a barcode, member ID number (digits), phone number, email, or a 'Member Since' date.\n"
-        "2. Strict Exclusion Filter: Do NOT extract brand names, page headers, menu choices, or system links. Under no circumstances should you return:\n"
-        "   - App/Company names (e.g., 'bites', 'The Food Purveyor')\n"
-        "   - Layout headers (e.g., 'My Profile', 'Account Details', 'Settings', 'Vouchers')\n"
-        "   - Menu list choices (e.g., 'FAQs', 'Contact Us', 'Support', 'Terms', 'Logout')\n"
-        "3. Output Format: Return a valid JSON array of strings containing the name. Format: [\"Name\"].\n"
-        "4. If no registered user's name is found, return an empty array: [].\n"
-        "5. Output ONLY the JSON array. Do not wrap in markdown fences (like ```json), and do not provide any explanation.\n\n"
+        "1. Identify the registered user's name (e.g. 'LOO CHUN QIAN', 'Jessica', 'Yan Ling').\n"
+        "2. Exclude app headers, system labels, points, or status texts.\n"
+        "3. Output format: Return a valid JSON array of strings containing the name. Format: [\"Name\"].\n"
+        "4. If no registered name is found, return an empty array: [].\n"
+        "5. Output ONLY the JSON array. Do not wrap in markdown fences and do not explain.\n\n"
         f"Raw OCR text:\n---\n{ocr_text}\n---"
     )
 
@@ -124,190 +150,190 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
             ],
             temperature=0.0,
             max_tokens=60,
-            timeout=12.0,  # 12s timeout for full text analysis
+            timeout=8.0,
         )
         
         content = response.choices[0].message.content
         if not content:
             return None
         
-        # Clean potential markdown block wrapping (e.g. ```json ... ```)
         content_clean = content.strip()
         if content_clean.startswith("```"):
             content_clean = re.sub(r"^```(?:json)?\n", "", content_clean)
             content_clean = re.sub(r"\n```$", "", content_clean)
             content_clean = content_clean.strip()
 
-        # Parse the JSON response
         names = json.loads(content_clean)
         if isinstance(names, list) and len(names) > 0:
-            name = str(names[0]).strip()
-            
-            # Guard against LLM hallucinating example names from system prompt instructions
-            hallucination_examples = ["siti nor hajar sheikh obit", "yan ling", "tan wei shen"]
-            if name.lower() in hallucination_examples:
-                # Clean alphabetic only check to prevent matching on tiny partial gibberish
-                clean_ocr = re.sub(r'[^a-zA-Z]', '', ocr_text).lower()
-                clean_name = re.sub(r'[^a-zA-Z]', '', name).lower()
-                if clean_name not in clean_ocr:
-                    print(f"[OCR] Guard: Rejected hallucinated name '{name}' not found in Raw OCR text.")
-                    return None
-            
-            if name:
-                return name
+            return str(names[0]).strip()
+        return None
+    except Exception as e:
+        print(f"[OCR-LLM] DeepSeek call failed: {e}")
         return None
 
-    except Exception as e:
-        print(f"[OCR] DeepSeek API call or JSON parse failed: {str(e)}. Falling back to regex.")
-        return None
-
-
-def is_plausible_layout(text: str) -> bool:
+def evaluate_candidates(ocr_lines: List[Dict[str, Any]]) -> Tuple[Optional[str], int]:
     """
-    Check if the raw OCR text contains common layout keywords.
-    If it contains at least one of these keywords, it's a plausible orientation.
-    """
-    keywords = [
-        "member", "since", "bites", "profile", "setting", "history", 
-        "transaction", "contact", "faq", "voucher", "purveyor", "version",
-        "account", "loyalty", "rewards", "points"
-    ]
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in keywords)
-
-
-def preprocess_image_for_ocr(image_path: str) -> str:
-    """
-    Enhance image contrast and sharpness to improve OCR accuracy on noisy screen photos.
-    Saves the preprocessed image to a temp file and returns its path.
-    """
-    try:
-        from PIL import Image, ImageEnhance
-        import os
-        
-        dir_name = os.path.dirname(image_path)
-        base_name = os.path.basename(image_path)
-        temp_prep_path = os.path.join(dir_name, "prep_" + base_name)
-        
-        with Image.open(image_path) as img:
-            # 1. Convert to grayscale to remove color channel moiré/rainbow noise
-            gray = img.convert('L')
-            
-            # 2. Upscale 1.5x (using Lanczos filter) to make text details larger and easier to segment
-            width, height = gray.size
-            resized = gray.resize((int(width * 1.5), int(height * 1.5)), Image.Resampling.LANCZOS)
-            
-            # 3. Enhance contrast (increase by 1.8x to make dark text stand out against light backgrounds)
-            contrast_enhancer = ImageEnhance.Contrast(resized)
-            contrast_img = contrast_enhancer.enhance(1.8)
-            
-            # 4. Enhance sharpness (increase by 1.5x to sharpen blurred text strokes)
-            sharpness_enhancer = ImageEnhance.Sharpness(contrast_img)
-            sharp_img = sharpness_enhancer.enhance(1.5)
-            
-            sharp_img.save(temp_prep_path)
-            print(f"[OCR] Image preprocessed and saved to: {temp_prep_path}")
-            return temp_prep_path
-    except Exception as e:
-        print(f"[OCR] Preprocessing failed: {e}. Using original image.")
-        return image_path
-
-
-def process_image(image_path: str) -> Tuple[Optional[str], str]:
-    """
-    OCR & Extraction Pipeline:
-      1. Preprocess image (enhance contrast, sharpen, grayscale, resize).
-      2. Run EasyOCR on the preprocessed image.
-      3. If layout is plausible, attempt extraction (LLM + Regex).
-      4. If failed or layout not plausible, try rotations (180, 270, 90) on the preprocessed image.
-      5. Returns the extracted name and the best raw text.
-    """
-    try:
-        from PIL import Image
-        import os
-    except ImportError:
-        pass
-
-    # Preprocess first
-    enhanced_path = preprocess_image_for_ocr(image_path)
-
-    best_text = ""
-    username = None
-    last_raw_text = ""
+    Rule Engine: Analyze the extracted OCR text lines and select the best promoter name candidate.
     
-    # Try orientations: 0 (original), 180 (upside down), 270 (90 deg clockwise), 90 (90 deg counter-clockwise)
-    orientations = [0, 180, 270, 90]
+    Rules & Scoring:
+      +30: Line is immediately below or adjacent to a "Welcome" prefix line.
+      +20: Line is immediately below a "Name" / "Username" / "姓名" / "Nama" label line.
+      +25: Line is followed within 2 lines by member metadata (ID, Member Since, etc.).
+      +15: Line matches 2~5 Chinese characters.
+      +15: Line matches 1~6 English words (letters/spaces only).
+      -30: Contains digits.
+      -20: Contains URL/links.
+      -20: Word token intersection matches PENALIZED_WORDS.
+      -20: All uppercase random characters.
+    """
+    candidates = []
     
-    for angle in orientations:
-        temp_rotated_path = None
-        try:
-            if angle == 0:
-                current_path = enhanced_path
-            else:
-                dir_name = os.path.dirname(enhanced_path)
-                base_name = os.path.basename(enhanced_path)
-                temp_rotated_path = os.path.join(dir_name, f"rotated_{angle}_{base_name}")
-                
-                with Image.open(enhanced_path) as img:
-                    rotated_img = img.rotate(angle, expand=True)
-                    rotated_img.save(temp_rotated_path)
-                current_path = temp_rotated_path
+    for i, line in enumerate(ocr_lines):
+        text = line["text"]
+        clean_text = text.strip()
+        
+        # Skip empty lines or single characters
+        if len(clean_text) < 2 or len(clean_text) > 50:
+            continue
             
-            raw_text = extract_text_from_image(current_path)
-            if angle == 0:
-                best_text = raw_text
+        score = 0
+        text_lower = clean_text.lower()
+        
+        # Check context patterns by scanning surrounding lines
+        # Check preceding line (if any)
+        if i > 0:
+            prev_text = ocr_lines[i-1]["text"].lower()
+            if any(kw in prev_text for kw in ["welcome", "selamat datang", "welcome back", "welcome,"]):
+                score += 30
+            elif any(kw in prev_text for kw in ["name", "username", "nickname", "姓名", "nama", "user"]):
+                score += 20
                 
-            # Clean up temp rotated file immediately
-            if temp_rotated_path:
-                try:
-                    if os.path.exists(temp_rotated_path):
-                        os.remove(temp_rotated_path)
-                except Exception as cleanup_err:
-                    print(f"[OCR] Temp rotated cleanup error for angle {angle}: {cleanup_err}")
+        # Check if the current line has a prefix (e.g. "Name: LOO CHUN QIAN" or "Welcome, Jessica")
+        if text_lower.startswith("welcome"):
+            score += 30
+            # Strip the prefix to evaluate the name itself
+            clean_text = re.sub(r"^welcome\s*[,!:\-]?\s*", "", clean_text, flags=re.IGNORECASE).strip()
+        elif re.search(r"^(?:name|username|nickname|姓名|nama)\s*[:：\-]\s*", clean_text, re.IGNORECASE):
+            score += 20
+            clean_text = re.sub(r"^(?:name|username|nickname|姓名|nama)\s*[:：\-]\s*", "", clean_text, flags=re.IGNORECASE).strip()
             
-            if not raw_text.strip():
-                continue
-                
-            # Heuristic check
-            if is_plausible_layout(raw_text):
-                print(f"[OCR] Orientation {angle}° looks plausible. Extracting...")
-                username = extract_username_with_llm(raw_text)
-                if not username:
-                    username = extract_username_fallback(raw_text)
-                
-                if username:
-                    print(f"[OCR] Successful extraction at {angle}°: '{username}'")
-                    last_raw_text = raw_text
+        # Re-evaluate length after prefix stripping
+        if len(clean_text) < 2:
+            continue
+
+        # Check succeeding lines for member metadata/ID markers (Bonus points)
+        # Name is usually followed by Member ID or Member Since or points
+        for offset in [1, 2]:
+            if i + offset < len(ocr_lines):
+                next_text = ocr_lines[i+offset]["text"].lower()
+                if any(kw in next_text for kw in ["member since", "since", "member id", "points", "loyalty"]):
+                    score += 25
                     break
-            else:
-                print(f"[OCR] Orientation {angle}° text layout is not plausible. Skipping LLM.")
-                if len(raw_text) > len(best_text):
-                    best_text = raw_text
+                elif next_text.strip().isdigit() and len(next_text.strip()) >= 5:
+                    score += 20
+                    break
 
-        except Exception as err:
-            print(f"[OCR] Rotation error for angle {angle}: {err}")
-            if temp_rotated_path:
-                try:
-                    if os.path.exists(temp_rotated_path):
-                        os.remove(temp_rotated_path)
-                except:
-                    pass
+        # Language Format Scoring
+        # 1. Chinese Name (2~5 characters)
+        if re.match(r"^[\u4e00-\u9fa5]{2,5}$", clean_text):
+            score += 15
+        # 2. English Name (1~6 words, letters/spaces only)
+        elif re.match(r"^[A-Za-z]+(?:\s+[A-Za-z]+){0,5}$", clean_text):
+            score += 15
+            
+        # Penalty Rules
+        # 1. Contains digits
+        if any(c.isdigit() for c in clean_text):
+            score -= 30
+        # 2. Contains URLs
+        if any(kw in text_lower for kw in [".com", ".net", ".org", "http", "www", "/"]):
+            score -= 20
+        # 3. Penalized layout / menu keywords (word token intersection check)
+        tokens = set(re.findall(r"[a-z]+", text_lower))
+        if tokens.intersection(PENALIZED_WORDS):
+            score -= 20
+        # 4. All uppercase random/garbage characters
+        if clean_text.isupper() and len(clean_text.split()) == 1 and len(clean_text) > 8:
+            score -= 20
+            
+        candidates.append((clean_text, score))
+        
+    if not candidates:
+        return None, 0
+        
+    # Sort candidates by score descending
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_candidate, best_score = candidates[0]
+    return best_candidate, best_score
 
-    # Clean up the main preprocessed image if we created a temp one
-    if enhanced_path != image_path:
-        try:
-            if os.path.exists(enhanced_path):
-                os.remove(enhanced_path)
-        except Exception as cleanup_err:
-            print(f"[OCR] Preprocessed image cleanup error: {cleanup_err}")
+def process_image(image_path: str) -> Dict[str, Any]:
+    """
+    Fully-rewritten High-Speed OCR Pipeline:
+      1. Preprocess image (resize to 1600px, grayscale, CLAHE contrast, adaptive thresh, median blur, deskew).
+      2. Run RapidOCR (PaddleOCR ONNX) -> extremely fast.
+      3. Run Rule Engine -> Score candidates.
+      4. Fallback to LLM only if score < 10, no candidate found, or OCR confidence is extremely low (< 0.45).
+      5. Time every phase and return stats.
+    """
+    total_start = time.time()
+    
+    # ── Phase 1: Preprocessing ──
+    try:
+        processed_img, prep_time = preprocess_image(image_path)
+    except Exception as e:
+        print(f"[OCR] Preprocessing error: {e}. Falling back to raw image read.")
+        # Fallback to standard grayscale read
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        processed_img = img if img is not None else np.zeros((320, 320), dtype=np.uint8)
+        prep_time = 0.0
+        
+    # ── Phase 2: OCR ──
+    ocr_lines, ocr_time = run_rapid_ocr(processed_img)
+    
+    # Compute average OCR confidence
+    avg_confidence = np.mean([line["confidence"] for line in ocr_lines]) if ocr_lines else 0.0
+    
+    # ── Phase 3: Rule Engine ──
+    rule_start = time.time()
+    extracted_name, candidate_score = evaluate_candidates(ocr_lines)
+    rule_time = time.time() - rule_start
+    
+    llm_used = False
+    
+    # Combine full raw text for debugging and LLM fallback
+    raw_text = "\n".join([line["text"] for line in ocr_lines])
+    
+    # ── Phase 4: Optional LLM Fallback ──
+    # Trigger LLM if score is too low, no candidate extracted, or OCR confidence is terrible
+    if extracted_name is None or candidate_score < 10 or avg_confidence < 0.45:
+        if DEEPSEEK_API_KEY:
+            print(f"[OCR] Rule engine failed/weak (name='{extracted_name}', score={candidate_score}, conf={avg_confidence:.2f}). Triggering LLM fallback...")
+            llm_start = time.time()
+            llm_name = extract_username_with_llm(raw_text)
+            llm_time = time.time() - llm_start
+            
+            if llm_name:
+                print(f"[OCR-LLM] Successfully extracted name via LLM: '{llm_name}' in {llm_time:.3f}s")
+                extracted_name = llm_name
+                candidate_score = 50  # Arbitrary high score for successful LLM extraction
+                llm_used = True
+                # Add LLM time to rule_time for tracking
+                rule_time += llm_time
+        else:
+            print(f"[OCR] Rule engine weak, but DEEPSEEK_API_KEY is not set. Bypassing LLM.")
 
-    # If we broke out with a username, return it
-    if username:
-        return username, last_raw_text
-
-    # Final fallback on best text if all orientations failed
-    print("[OCR] All rotation heuristics failed. Running final fallback extraction on original text.")
-    username = extract_username_with_llm(best_text)
-    if not username:
-        username = extract_username_fallback(best_text)
-    return username, best_text
+    total_time = time.time() - total_start
+    
+    # Print summary performance metrics
+    print(f"[OCR-Pipeline] Completed in {total_time:.3f}s (OCR: {ocr_time:.3f}s, Prep: {prep_time:.3f}s, Rule: {rule_time:.3f}s). Extracted: '{extracted_name}', LLM: {llm_used}")
+    
+    return {
+        "extracted_username": extracted_name,
+        "ocr_raw_text": raw_text,
+        "ocr_time": prep_time + ocr_time, # Combine prep + ocr engine execution times
+        "rule_time": rule_time,
+        "ocr_confidence": avg_confidence,
+        "candidate_score": candidate_score,
+        "llm_used": llm_used,
+        "total_time": total_time
+    }

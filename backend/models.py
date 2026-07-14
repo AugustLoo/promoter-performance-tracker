@@ -73,6 +73,16 @@ class AdminSubmission(BaseModel):
     status: str
     image_path: str
     created_at: str
+    # Performance logging columns
+    ocr_time: Optional[float] = None
+    rule_time: Optional[float] = None
+    matching_time: Optional[float] = None
+    total_time: Optional[float] = None
+    ocr_confidence: Optional[float] = None
+    candidate_score: Optional[int] = None
+    matched_name: Optional[str] = None
+    similarity: Optional[float] = None
+    llm_used: Optional[bool] = False
 
 
 class AdminStatsResponse(BaseModel):

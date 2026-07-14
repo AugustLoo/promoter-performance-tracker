@@ -9,6 +9,7 @@ Upload Route — The core pipeline that handles:
 """
 
 import os
+import time
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from rapidfuzz import fuzz, process
 
 from database import get_db, Promoter, Submission, ValidUsername
 from models import UploadResponse, SubmissionResult
@@ -33,9 +35,11 @@ async def _process_single_file(
     db: Session,
 ) -> SubmissionResult:
     """
-    Process a single uploaded screenshot through the full OCR pipeline.
-    This is extracted as a helper to keep the main route handler clean.
+    Process a single uploaded screenshot through the full high-speed OCR pipeline.
+    Includes OpenCV preprocessing, RapidOCR, Rule Engine, and fuzzy duplicate checking.
     """
+    total_start = time.time()
+
     # ── Step 1: Read file contents and validate size ──
     contents = await upload_file.read()
     file_size_mb = len(contents) / (1024 * 1024)
@@ -54,21 +58,38 @@ async def _process_single_file(
             tmp.write(contents)
             temp_path = Path(tmp.name)
 
-        # ── Step 3: Run OCR and extract username ──
-        username, raw_text = process_image(str(temp_path))
+        # ── Step 3: Run OCR and extract username using the new pipeline ──
+        ocr_result = process_image(str(temp_path))
+        username = ocr_result["extracted_username"]
+        raw_text = ocr_result["ocr_raw_text"]
+        ocr_time = ocr_result["ocr_time"]
+        rule_time = ocr_result["rule_time"]
+        ocr_confidence = ocr_result["ocr_confidence"]
+        candidate_score = ocr_result["candidate_score"]
+        llm_used = ocr_result["llm_used"]
 
         if username is None:
-            # OCR failed or no username detected → route to duplicate folder
+            # OCR failed or no username detected → route to duplicate/failed folder
             filename = generate_filename(None)
             dest_folder = get_storage_path(promoter.name, is_duplicate=True)
             relative_path = save_uploaded_image(temp_path, dest_folder, filename)
 
+            total_time = time.time() - total_start
             submission = Submission(
                 promoter_id=promoter.id,
                 extracted_username=None,
                 image_path=relative_path,
                 status="ocr_failed",
                 ocr_raw_text=raw_text,
+                ocr_time=ocr_time,
+                rule_time=rule_time,
+                matching_time=0.0,
+                total_time=total_time,
+                ocr_confidence=ocr_confidence,
+                candidate_score=candidate_score,
+                matched_name=None,
+                similarity=0.0,
+                llm_used=llm_used,
             )
             db.add(submission)
             db.commit()
@@ -80,25 +101,54 @@ async def _process_single_file(
                 message="Could not detect username. Please retake a clearer screenshot.",
             )
 
-        # ── Step 4: Check if this username already exists ──
-        existing = (
-            db.query(ValidUsername)
-            .filter(ValidUsername.username == username)
-            .first()
-        )
+        # ── Step 4: Fuzzy Match Duplicate Check using RapidFuzz ──
+        match_start = time.time()
+        
+        # Retrieve all globally validated usernames for fuzzy comparison
+        all_valid_entries = db.query(ValidUsername).all()
+        
+        best_match_name = None
+        best_score = 0.0
+        
+        if all_valid_entries:
+            usernames = [entry.username for entry in all_valid_entries]
+            # Use token_sort_ratio to catch permutations/typos (e.g. LOO CHUN OIAN vs LOO CHUN QIAN)
+            fuzz_res = process.extractOne(
+                username, 
+                usernames, 
+                scorer=fuzz.token_sort_ratio
+            )
+            if fuzz_res:
+                best_match_name, score_val, _ = fuzz_res
+                # Also compute set ratio to handle partial/inclusion matching
+                set_ratio = fuzz.token_set_ratio(username, best_match_name)
+                best_score = max(score_val, set_ratio)
 
-        if existing:
-            # Known duplicate → route to duplicate folder
+        matching_time = time.time() - match_start
+
+        # Duplicate threshold is 92% similarity
+        if best_score >= 92.0:
+            # Duplicate found → route to duplicate folder
             filename = generate_filename(username)
             dest_folder = get_storage_path(promoter.name, is_duplicate=True)
             relative_path = save_uploaded_image(temp_path, dest_folder, filename)
 
+            total_time = time.time() - total_start
             submission = Submission(
                 promoter_id=promoter.id,
                 extracted_username=username,
                 image_path=relative_path,
                 status="duplicate",
                 ocr_raw_text=raw_text,
+                ocr_time=ocr_time,
+                rule_time=rule_time,
+                matching_time=matching_time,
+                total_time=total_time,
+                ocr_confidence=ocr_confidence,
+                candidate_score=candidate_score,
+                matched_name=best_match_name,
+                similarity=best_score,
+                llm_used=llm_used,
             )
             db.add(submission)
             db.commit()
@@ -107,7 +157,7 @@ async def _process_single_file(
                 filename=upload_file.filename or "unknown",
                 status="duplicate",
                 extracted_username=username,
-                message=f"Duplicate! Username '{username}' was already submitted.",
+                message=f"Duplicate! Username '{username}' matched existing '{best_match_name}' ({best_score:.1f}% similarity).",
             )
 
         # ── Step 5: New username — save to valid folder ──
@@ -115,18 +165,28 @@ async def _process_single_file(
         dest_folder = get_storage_path(promoter.name, is_duplicate=False)
         relative_path = save_uploaded_image(temp_path, dest_folder, filename)
 
+        total_time = time.time() - total_start
         submission = Submission(
             promoter_id=promoter.id,
             extracted_username=username,
             image_path=relative_path,
             status="valid",
             ocr_raw_text=raw_text,
+            ocr_time=ocr_time,
+            rule_time=rule_time,
+            matching_time=matching_time,
+            total_time=total_time,
+            ocr_confidence=ocr_confidence,
+            candidate_score=candidate_score,
+            matched_name=best_match_name,
+            similarity=best_score,
+            llm_used=llm_used,
         )
         db.add(submission)
         db.flush()  # Get submission.id before committing
 
         try:
-            # Insert into valid_usernames — UNIQUE constraint is our safety net
+            # Insert into valid_usernames
             valid_entry = ValidUsername(
                 username=username,
                 submission_id=submission.id,
@@ -143,12 +203,10 @@ async def _process_single_file(
             )
 
         except IntegrityError:
-            # Race condition: another concurrent request inserted the same
-            # username between our SELECT check and this INSERT.
-            # This is extremely rare with SQLite but we handle it gracefully.
+            # Database unique constraint fail (race condition fallback)
             db.rollback()
 
-            # Move the file from the valid folder to the duplicate folder
+            # Move file to duplicate directory
             src_path = UPLOAD_DIR / relative_path
             dup_folder = get_storage_path(promoter.name, is_duplicate=True)
             dup_dest = dup_folder / filename
@@ -156,26 +214,22 @@ async def _process_single_file(
                 shutil.move(str(src_path), str(dup_dest))
             new_relative_path = str(dup_dest.relative_to(UPLOAD_DIR))
 
-            # Create a new submission record marked as duplicate
-            dup_submission = Submission(
-                promoter_id=promoter.id,
-                extracted_username=username,
-                image_path=new_relative_path,
-                status="duplicate",
-                ocr_raw_text=raw_text,
-            )
-            db.add(dup_submission)
+            # Re-write duplicate submission record
+            submission.image_path = new_relative_path
+            submission.status = "duplicate"
+            submission.similarity = 100.0  # Exact match constraint hit
+            db.add(submission)
             db.commit()
 
             return SubmissionResult(
                 filename=upload_file.filename or "unknown",
                 status="duplicate",
                 extracted_username=username,
-                message=f"Duplicate! Username '{username}' was submitted by another promoter.",
+                message=f"Duplicate! Username '{username}' was registered by another promoter.",
             )
 
     finally:
-        # Always clean up the temporary file
+        # Always clean up temporary file
         if temp_path and temp_path.exists():
             os.unlink(temp_path)
 

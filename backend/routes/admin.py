@@ -156,6 +156,15 @@ async def get_admin_stats(
                 status=sub.status,
                 image_path=sub.image_path,
                 created_at=sub.created_at.isoformat() if sub.created_at else "",
+                ocr_time=sub.ocr_time,
+                rule_time=sub.rule_time,
+                matching_time=sub.matching_time,
+                total_time=sub.total_time,
+                ocr_confidence=sub.ocr_confidence,
+                candidate_score=sub.candidate_score,
+                matched_name=sub.matched_name,
+                similarity=sub.similarity,
+                llm_used=bool(sub.llm_used) if sub.llm_used is not None else False,
             )
         )
 
