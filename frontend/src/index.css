@@ -1274,20 +1274,20 @@ h1, h2, h3, h4 {
 }
 
 .leaderboard-title {
-  font-family: 'Outfit', 'Nunito', 'Quicksand', 'Segoe UI', system-ui, sans-serif; /* Highly rounded, smooth geometric fonts */
-  font-size: 3.8cqw; /* Tuned smaller as requested */
-  font-weight: 850; /* Slightly bolder for a softer, bubble-like appearance */
-  color: #2e2a2b; /* Warm dark charcoal black from the screenshot */
+  font-family: var(--font-heading); /* Matching 'Poppins', sans-serif from hero title */
+  font-size: 3.8cqw;
+  font-weight: 700;
+  color: var(--text-main); /* Matching #2d3748 from hero title */
   margin: 0;
   line-height: 1.1;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 .leaderboard-subtext {
-  font-family: 'Nunito', 'Quicksand', system-ui, sans-serif;
-  font-size: 1.5cqw; /* Tuned smaller as requested */
-  color: #707a8a; /* Soft blue-grey color from the screenshot */
-  font-weight: 700;
+  font-family: var(--font-main); /* Matching 'Outfit', sans-serif from hero subtitle */
+  font-size: 1.5cqw;
+  color: var(--text-muted); /* Matching #718096 from hero subtitle */
+  font-weight: 400; /* Matching weight 400 from hero subtitle */
   margin: 0.2cqw 0 0 0;
   line-height: 1.2;
 }
