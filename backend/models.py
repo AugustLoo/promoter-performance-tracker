@@ -44,6 +44,7 @@ class LeaderboardResponse(BaseModel):
     total_promoters: int
     total_valid: int
     total_submissions: int
+    today_valid: int
     last_updated: str
 
 

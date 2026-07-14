@@ -58,10 +58,23 @@ async def get_leaderboard(db: Session = Depends(get_db)):
     total_valid = db.query(func.count(ValidUsername.id)).scalar() or 0
     total_submissions = db.query(func.count(Submission.id)).scalar() or 0
 
+    # Calculate today's valid signups
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_valid = (
+        db.query(func.count(Submission.id))
+        .filter(
+            Submission.status == "valid",
+            Submission.created_at >= today_start
+        )
+        .scalar()
+        or 0
+    )
+
     return LeaderboardResponse(
         entries=entries,
         total_promoters=total_promoters,
         total_valid=total_valid,
         total_submissions=total_submissions,
+        today_valid=today_valid,
         last_updated=datetime.now(timezone.utc).isoformat(),
     )

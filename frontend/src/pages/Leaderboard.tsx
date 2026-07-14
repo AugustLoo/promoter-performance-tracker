@@ -37,13 +37,16 @@ export default function Leaderboard() {
             <span>💖 Track. Verify. Reward.</span>
           </div>
           <h1 className="hero-title">Smart Promoter Performance Tracker</h1>
-          <p className="hero-subtitle">
-            Upload proofs, avoid duplicates, and climb the leaderboard!
-            Let's make every new user count.
-          </p>
+          <div className="hero-subtitle">
+            <p className="hero-subtitle-primary">Upload proofs, avoid duplicates, and climb the leaderboard!</p>
+            <p className="hero-subtitle-primary">Let's make every new user count.</p>
+            <p className="hero-subtitle-secondary">
+              功能解释：上传推广凭证、防重复刷单、冲排行榜榜单；强调每一条新增注册数据都有效可统计。
+            </p>
+          </div>
           <div className="hero-buttons">
             <Link to="/upload" className="btn btn-primary">
-              📤 Upload Proof
+              ☁️ Upload Proof
             </Link>
             <button className="btn btn-secondary" onClick={scrollToLeaderboard}>
               🏆 View Leaderboard
@@ -100,13 +103,13 @@ export default function Leaderboard() {
               </div>
             </div>
 
-            {/* Total Submissions */}
+            {/* Today's Signups */}
             <div className="stat-card">
-              <div className="stat-icon-wrapper today">📊</div>
+              <div className="stat-icon-wrapper today">✅</div>
               <div className="stat-info">
-                <span className="stat-label">Submissions</span>
-                <span className="stat-value">{data.total_submissions}</span>
-                <span className="stat-hint">OCR scanned total</span>
+                <span className="stat-label">Today's Signups</span>
+                <span className="stat-value">{data.today_valid}</span>
+                <span className="stat-hint">New this morning</span>
               </div>
             </div>
 

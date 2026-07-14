@@ -30,6 +30,7 @@ export interface LeaderboardResponse {
   total_promoters: number;
   total_valid: number;
   total_submissions: number;
+  today_valid: number;
   last_updated: string;
 }
 
