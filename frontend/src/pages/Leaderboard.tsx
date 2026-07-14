@@ -197,7 +197,37 @@ export default function Leaderboard() {
               </div>
             </div>
 
-            {/* ── Podiums Stand Text Overlays (Jessica, Alex, Samantha) ── */}
+            {/* ── Podiums Stand Avatar Placeholders (Conditional based on real database records) ── */}
+            {entries[1] && (
+              <div className="podium-avatar-wrapper second">
+                <svg viewBox="0 0 100 100" className="avatar-svg">
+                  <circle cx="50" cy="50" r="48" fill="#f7f7f8" stroke="#eee" strokeWidth="1.5"/>
+                  <circle cx="50" cy="52" r="20" fill="#e8e8ec"/>
+                  <circle cx="50" cy="38" r="12" fill="#e8e8ec"/>
+                </svg>
+              </div>
+            )}
+
+            {entries[0] && (
+              <div className="podium-avatar-wrapper first">
+                <svg viewBox="0 0 100 100" className="avatar-svg">
+                  <circle cx="50" cy="50" r="48" fill="#f7f7f8" stroke="#eee" strokeWidth="1.5"/>
+                  <circle cx="50" cy="52" r="20" fill="#e8e8ec"/>
+                  <circle cx="50" cy="38" r="12" fill="#e8e8ec"/>
+                </svg>
+              </div>
+            )}
+
+            {entries[2] && (
+              <div className="podium-avatar-wrapper third">
+                <svg viewBox="0 0 100 100" className="avatar-svg">
+                  <circle cx="50" cy="50" r="48" fill="#f7f7f8" stroke="#eee" strokeWidth="1.5"/>
+                  <circle cx="50" cy="52" r="20" fill="#e8e8ec"/>
+                  <circle cx="50" cy="38" r="12" fill="#e8e8ec"/>
+                </svg>
+              </div>
+            )}
+
             {/* ── Podiums Stand Text Overlays (Conditional based on real database records) ── */}
             {entries[1] && (
               <div className="podium-overlay second">

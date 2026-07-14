@@ -1714,10 +1714,50 @@ h4 {
   color: #c7925e;
 }
 
+/* ── Podiums Stand Avatar Placeholders (Centered over background circles) ── */
+.podium-avatar-wrapper {
+  position: absolute;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 2px rgba(255, 220, 230, 0.5), 0 2px 8px rgba(255, 90, 128, 0.06);
+  background: #fafafa;
+  z-index: 9;
+  display: block;
+}
+
+.podium-avatar-wrapper .avatar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Avatar positions aligned with background circles */
+.podium-avatar-wrapper.second {
+  width: 6.0cqw;
+  height: 6.0cqw;
+  left: 8.4%;
+  top: 46.5%;
+}
+
+.podium-avatar-wrapper.first {
+  width: 6.8cqw;
+  height: 6.8cqw;
+  left: 23.2%;
+  top: 41.0%;
+}
+
+.podium-avatar-wrapper.third {
+  width: 6.0cqw;
+  height: 6.0cqw;
+  left: 38.6%;
+  top: 47.2%;
+}
+
 /* Responsive adjustment for mobile screen dimensions */
 @media (max-width: 900px) {
-  .podium-overlay {
+  .podium-overlay,
+  .podium-avatar-wrapper {
     display: none;
-    /* Hide absolute podium overlays on mobile stack layout */
+    /* Hide absolute overlays on mobile stack layout */
   }
 }
