@@ -235,12 +235,31 @@ async def _process_single_file(
             os.unlink(temp_path)
 
 
-def get_random_avatar(gender: str) -> str:
-    num = random.randint(1, 4)
-    if gender == "male":
-        return f"/avatars/avatar_m{num}.png"
+def get_random_avatar(gender: str, db: Session) -> str:
+    # Pool of 8 avatars for male (avatar_m1 to avatar_m8) and 8 for female (avatar_f1 to avatar_f8)
+    avatar_pool = [f"/avatars/avatar_m{i}.png" for i in range(1, 9)] if gender == "male" else [f"/avatars/avatar_f{i}.png" for i in range(1, 9)]
+    
+    # Query all currently assigned avatars in the database
+    assigned_avatars = [r[0] for r in db.query(Promoter.avatar).filter(Promoter.avatar != None).all()]
+    
+    # Find unused avatars
+    unused = [a for a in avatar_pool if a not in assigned_avatars]
+    
+    if unused:
+        # Pick a random one from the unused pool
+        return random.choice(unused)
     else:
-        return f"/avatars/avatar_f{num}.png"
+        # If all are used, find the frequency of each avatar and pick the least used one
+        freq = {a: 0 for a in avatar_pool}
+        for a in assigned_avatars:
+            if a in freq:
+                freq[a] += 1
+        
+        # Sort by frequency (ascending)
+        sorted_avatars = sorted(avatar_pool, key=lambda a: freq[a])
+        min_freq = freq[sorted_avatars[0]]
+        least_used = [a for a in avatar_pool if freq[a] == min_freq]
+        return random.choice(least_used)
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -291,7 +310,7 @@ async def upload_screenshots(
             name=promoter_name.strip(),
             ic_number=ic_number.strip(),
             gender=selected_gender,
-            avatar=get_random_avatar(selected_gender),
+            avatar=get_random_avatar(selected_gender, db),
         )
         db.add(promoter)
         db.commit()
@@ -304,7 +323,7 @@ async def upload_screenshots(
         # If gender changed or if no avatar is assigned, assign new random avatar
         if not promoter.avatar or (gender and promoter.gender != selected_gender):
             promoter.gender = selected_gender
-            promoter.avatar = get_random_avatar(selected_gender)
+            promoter.avatar = get_random_avatar(selected_gender, db)
         
         db.commit()
 
