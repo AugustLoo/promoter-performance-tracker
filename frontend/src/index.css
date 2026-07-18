@@ -2071,37 +2071,39 @@ h4 {
 
   /* ── Navigation Bar Mobile Wrapping ── */
   .navbar {
-    height: auto;
-    padding: 12px 0;
+    height: 70px;
+    padding: 0;
     position: fixed;
   }
 
   .navbar-content {
-    flex-direction: column;
-    gap: 12px;
-    text-align: center;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0;
+    padding: 0 16px;
   }
 
   .navbar-links {
-    width: 100%;
-    justify-content: center;
-    flex-wrap: wrap;
+    width: auto;
+    justify-content: flex-end;
     gap: 8px;
   }
 
   .navbar-link {
-    padding: 6px 14px;
-    font-size: 0.85rem;
-  }
-
-  .navbar-admin-btn {
-    padding: 6px 14px;
+    padding: 6px 10px;
     font-size: 0.82rem;
   }
 
+  .navbar-admin-btn {
+    padding: 6px 10px;
+    font-size: 0.80rem;
+    margin-left: 8px !important;
+  }
+
   .page {
-    margin-top: 135px;
-    /* Prevent fixed dual-row mobile header from overlapping page content */
+    margin-top: 85px;
+    /* Prevent fixed mobile header from overlapping page content */
   }
 
   /* ── Hero Banner — Full-bleed phone_bg.png with overlaid content ── */
