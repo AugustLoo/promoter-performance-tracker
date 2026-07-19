@@ -1,15 +1,11 @@
 # ================================================================
-# Backend URL Configuration
+# Backend: Render (always on, free tier — slower OCR)
 # ================================================================
-# PRIMARY: Hugging Face Spaces (free, always-on, no credit card)
-#   Replace YOUR_SPACE_URL with your HF Space URL after setup
-#   Example: https://yourname-promoter-tracker.hf.space
-# ================================================================
-# FALLBACK/FAST: Local PC via Cloudflare Tunnel (when PC is on)
-#   Replace the URLs below with your current trycloudflare.com URL
-#   Run: cloudflared tunnel --url http://localhost:8000
+# For FAST MODE: replace the lines below with your Cloudflare Tunnel URL:
+#   /api/*      https://xxxx.trycloudflare.com/api/:splat  200
+#   /uploads/*  https://xxxx.trycloudflare.com/uploads/:splat  200
 # ================================================================
 
-/api/*      https://YOUR_SPACE_URL.hf.space/api/:splat  200
-/uploads/*  https://YOUR_SPACE_URL.hf.space/uploads/:splat  200
-/*          /index.html                                    200
+/api/*      https://promoter-performance-tracker.onrender.com/api/:splat  200
+/uploads/*  https://promoter-performance-tracker.onrender.com/uploads/:splat  200
+/*          /index.html                                                    200
