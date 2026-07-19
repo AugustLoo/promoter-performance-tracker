@@ -4,7 +4,7 @@
  */
 
 /** Maximum width/height for compressed images (pixels) */
-const MAX_DIMENSION = 800;
+const MAX_DIMENSION = 640;
 /** JPEG quality for compression (0.0 to 1.0) */
 const QUALITY = 0.8;
 /** Maximum file size after compression (bytes) — 50KB */

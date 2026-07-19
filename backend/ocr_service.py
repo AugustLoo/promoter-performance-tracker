@@ -27,8 +27,8 @@ def get_ocr_engine() -> RapidOCR:
     """Return the singleton RapidOCR engine instance."""
     global _ocr_engine
     if _ocr_engine is None:
-        print("[OCR] Initializing RapidOCR engine...")
-        _ocr_engine = RapidOCR()
+        print("[OCR] Initializing RapidOCR engine (det_limit_side_len=480)...")
+        _ocr_engine = RapidOCR(det_limit_side_len=480, det_limit_type="max")
         print("[OCR] RapidOCR engine initialized successfully.")
     return _ocr_engine
 
@@ -59,8 +59,8 @@ def preprocess_image(image_path: str) -> Tuple[np.ndarray, float]:
         
     h, w = img.shape[:2]
     
-    # 1. Resize to max side 800px (helps speed up ONNX OCR model on slow CPUs)
-    max_side = 800
+    # 1. Resize to max side 640px (helps speed up ONNX OCR model on slow CPUs)
+    max_side = 640
     if max(h, w) > max_side:
         if w > h:
             new_w = max_side
