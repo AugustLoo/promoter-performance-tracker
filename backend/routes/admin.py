@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database import get_db, Promoter, Submission, ValidUsername
+from worker import remove_from_cache
 from models import (
     AdminLoginRequest,
     AdminLoginResponse,
@@ -195,8 +196,11 @@ async def delete_submission(
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found.")
 
-    # 1. Delete from valid_usernames if it exists
-    db.query(ValidUsername).filter(ValidUsername.submission_id == submission_id).delete()
+    # 1. Delete from valid_usernames if it exists, and clear from in-memory cache
+    valid_entry = db.query(ValidUsername).filter(ValidUsername.submission_id == submission_id).first()
+    if valid_entry:
+        remove_from_cache(valid_entry.username)
+        db.delete(valid_entry)
 
     # 2. Try deleting physical file on disk
     try:
@@ -243,8 +247,11 @@ async def delete_submissions_batch(
     submissions = db.query(Submission).filter(Submission.id.in_(request.ids)).all()
     
     for sub in submissions:
-        # Delete from valid_usernames
-        db.query(ValidUsername).filter(ValidUsername.submission_id == sub.id).delete()
+        # Delete from valid_usernames and clear from in-memory cache
+        valid_entry = db.query(ValidUsername).filter(ValidUsername.submission_id == sub.id).first()
+        if valid_entry:
+            remove_from_cache(valid_entry.username)
+            db.delete(valid_entry)
         
         # Delete file on disk
         try:

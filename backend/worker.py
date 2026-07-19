@@ -52,6 +52,14 @@ def _add_to_cache(username: str):
         _username_cache.append(username)
 
 
+def remove_from_cache(username: str):
+    """Remove a username from the in-memory cache (e.g., after admin deletion)."""
+    with _username_cache_lock:
+        if username in _username_cache:
+            _username_cache.remove(username)
+            print(f"[Worker] Removed '{username}' from username cache.")
+
+
 def get_cached_usernames() -> List[str]:
     """Return a snapshot of the current username cache (thread-safe)."""
     with _username_cache_lock:
