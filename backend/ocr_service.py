@@ -2,6 +2,8 @@ import os
 import re
 import time
 import json
+import hashlib
+import threading
 import numpy as np
 import cv2
 from PIL import Image, ImageEnhance
@@ -27,8 +29,8 @@ def get_ocr_engine() -> RapidOCR:
     """Return the singleton RapidOCR engine instance."""
     global _ocr_engine
     if _ocr_engine is None:
-        print("[OCR] Initializing RapidOCR engine (det_limit_side_len=480)...")
-        _ocr_engine = RapidOCR(det_limit_side_len=480, det_limit_type="max")
+        print("[OCR] Initializing RapidOCR engine...")
+        _ocr_engine = RapidOCR()
         print("[OCR] RapidOCR engine initialized successfully.")
     return _ocr_engine
 
@@ -78,9 +80,11 @@ def preprocess_image(image_path: str) -> Tuple[np.ndarray, float]:
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     contrast = clahe.apply(gray)
 
-    # 4. Deskewing
-    # Find dark text pixels to detect rotation
-    coords = np.column_stack(np.where(contrast < 100))
+    # 4. Deskewing (optimized: downsample 4x before angle detection)
+    # Downsample to ~160px max dimension for fast angle estimation
+    ds_factor = 4
+    small = cv2.resize(contrast, (w // ds_factor, h // ds_factor), interpolation=cv2.INTER_AREA)
+    coords = np.column_stack(np.where(small < 100))
     angle = 0.0
     if len(coords) > 0:
         # minAreaRect returns angle in range [-90, 0)
@@ -90,14 +94,14 @@ def preprocess_image(image_path: str) -> Tuple[np.ndarray, float]:
             angle = -(90 + angle)
         else:
             angle = -angle
-            
+
         # Only rotate if the angle is significant but within bounds of a snapshot tilt (0.5 to 15 deg)
         if 0.5 <= abs(angle) <= 15:
             center = (w // 2, h // 2)
             M = cv2.getRotationMatrix2D(center, angle, 1.0)
             contrast = cv2.warpAffine(
-                contrast, M, (w, h), 
-                flags=cv2.INTER_CUBIC, 
+                contrast, M, (w, h),
+                flags=cv2.INTER_CUBIC,
                 borderMode=cv2.BORDER_REPLICATE
             )
             
@@ -125,8 +129,33 @@ def run_rapid_ocr(processed_img: np.ndarray) -> Tuple[List[Dict[str, Any]], floa
     ocr_time = time.time() - start_time
     return ocr_lines, ocr_time
 
+# LLM response cache — keyed by OCR text hash, avoids redundant API calls
+# Max 100 entries, stores (username, None) pairs where None means "no name found"
+_llm_cache: Dict[str, Optional[str]] = {}
+_llm_cache_lock = threading.Lock()
+_LLM_CACHE_MAX = 100
+
+def _cache_key(text: str) -> str:
+    """Short hash of OCR text for cache lookups."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:12]
+
+
 def extract_username_with_llm(ocr_text: str) -> Optional[str]:
     """Fallback: Call DeepSeek LLM to extract the username from OCR raw text."""
+    # ── Guard: skip empty or very short OCR text ──
+    stripped = ocr_text.strip()
+    if len(stripped) < 10:
+        print(f"[OCR-LLM] OCR text too short ({len(stripped)} chars), skipping LLM fallback.")
+        return None
+
+    # ── Check cache first ──
+    key = _cache_key(stripped)
+    with _llm_cache_lock:
+        if key in _llm_cache:
+            cached = _llm_cache[key]
+            print(f"[OCR-LLM] Cache HIT — returning cached result: '{cached}'")
+            return cached
+
     system_prompt = (
         "You are an expert, highly intelligent parser for mobile app profile screenshots. "
         "You specialize in identifying registered user names from raw OCR text by understanding the screen layout context."
@@ -157,7 +186,7 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
             ],
             temperature=0.0,
             max_tokens=60,
-            timeout=8.0,
+            timeout=3.0,
         )
         
         content = response.choices[0].message.content
@@ -171,11 +200,21 @@ def extract_username_with_llm(ocr_text: str) -> Optional[str]:
             content_clean = content_clean.strip()
 
         names = json.loads(content_clean)
-        if isinstance(names, list) and len(names) > 0:
-            return str(names[0]).strip()
-        return None
+        result = str(names[0]).strip() if (isinstance(names, list) and len(names) > 0) else None
+        # Write to cache
+        with _llm_cache_lock:
+            if len(_llm_cache) >= _LLM_CACHE_MAX:
+                # Evict oldest entry (first key, simple FIFO eviction)
+                _llm_cache.pop(next(iter(_llm_cache)))
+            _llm_cache[key] = result
+        return result
     except Exception as e:
         print(f"[OCR-LLM] DeepSeek call failed: {e}")
+        # Cache failures too (as None) to avoid repeated failing calls
+        with _llm_cache_lock:
+            if len(_llm_cache) >= _LLM_CACHE_MAX:
+                _llm_cache.pop(next(iter(_llm_cache)))
+            _llm_cache[key] = None
         return None
 
 def evaluate_candidates(ocr_lines: List[Dict[str, Any]]) -> Tuple[Optional[str], int]:

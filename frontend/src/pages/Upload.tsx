@@ -92,8 +92,8 @@ export default function Upload() {
     // Initial fetch
     poll();
 
-    // Poll every 3 seconds
-    pollingRef.current = setInterval(poll, 3000);
+    // Poll every 1.5 seconds
+    pollingRef.current = setInterval(poll, 1500);
   }, []);
 
   // Handle file selection

@@ -1,20 +1,19 @@
 """
-Background Worker — In-memory task queue for async OCR processing.
+Background Worker — Multi-threaded task queue for async OCR processing.
 
-Uses a simple threading.Thread + queue.Queue pattern to process
-uploaded images one at a time in the background, without needing
-external dependencies like Celery or Redis.
+Uses ThreadPoolExecutor for parallel OCR processing and an in-memory
+username cache to avoid full-table scans on every submission.
 
-This is ideal for Render free tier with SQLite (no concurrent writes).
+Thread safety for SQLite writes is ensured via a shared lock.
 """
 
 import threading
-import queue
 import time
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -22,26 +21,57 @@ from rapidfuzz import fuzz, process
 
 from database import SessionLocal, Submission, ValidUsername, Promoter
 from ocr_service import process_image
-from utils import get_storage_path, generate_filename
+from utils import get_storage_path
 from config import UPLOAD_DIR
 
 # ──────────────────────────────────────────────
-# Task Queue
+# Parallelism & Thread Safety
 # ──────────────────────────────────────────────
-_task_queue: queue.Queue = queue.Queue()
-_worker_thread: Optional[threading.Thread] = None
+_MAX_WORKERS = 4
+_executor: Optional[ThreadPoolExecutor] = None
+_db_lock = threading.Lock()  # Serializes SQLite writes across threads
+
+# ──────────────────────────────────────────────
+# In-Memory Username Cache (avoids full-table scan)
+# ──────────────────────────────────────────────
+_username_cache: List[str] = []
+_username_cache_lock = threading.RLock()  # Reentrant lock — safe for nested acquisition
+
+
+def _refresh_username_cache(db: Session):
+    """Reload the full list of valid usernames from the database."""
+    global _username_cache
+    entries = db.query(ValidUsername.username).all()
+    with _username_cache_lock:
+        _username_cache = [e[0] for e in entries]
+
+
+def _add_to_cache(username: str):
+    """Append a newly-validated username to the in-memory cache."""
+    with _username_cache_lock:
+        _username_cache.append(username)
+
+
+def get_cached_usernames() -> List[str]:
+    """Return a snapshot of the current username cache (thread-safe)."""
+    with _username_cache_lock:
+        return list(_username_cache)
 
 
 def enqueue_ocr_task(submission_id: int):
-    """Add a submission ID to the processing queue."""
-    _task_queue.put(submission_id)
-    print(f"[Worker] Enqueued submission #{submission_id} (queue size: {_task_queue.qsize()})")
+    """Submit a submission ID to the worker pool for background processing."""
+    if _executor is None:
+        print("[Worker] Executor not started! Falling back to sync processing.")
+        _process_submission(submission_id)
+        return
+    _executor.submit(_process_submission, submission_id)
+    print(f"[Worker] Enqueued submission #{submission_id} (active threads may be processing)")
 
 
 def _process_submission(submission_id: int):
     """
     Process a single pending submission through the OCR pipeline.
-    This runs in the background thread with its own DB session.
+    Runs in any worker thread with its own DB session.
     """
     db: Session = SessionLocal()
     try:
@@ -59,9 +89,10 @@ def _process_submission(submission_id: int):
         promoter = db.query(Promoter).filter(Promoter.id == submission.promoter_id).first()
         if not promoter:
             print(f"[Worker] Promoter not found for submission #{submission_id}, marking as ocr_failed.")
-            submission.status = "ocr_failed"
-            submission.ocr_raw_text = "Promoter record not found."
-            db.commit()
+            with _db_lock:
+                submission.status = "ocr_failed"
+                submission.ocr_raw_text = "Promoter record not found."
+                db.commit()
             return
 
         # Build the full image path
@@ -69,22 +100,24 @@ def _process_submission(submission_id: int):
 
         if not os.path.exists(image_full_path):
             print(f"[Worker] Image file not found: {image_full_path}, marking as ocr_failed.")
-            submission.status = "ocr_failed"
-            submission.ocr_raw_text = "Image file not found on disk."
-            db.commit()
+            with _db_lock:
+                submission.status = "ocr_failed"
+                submission.ocr_raw_text = "Image file not found on disk."
+                db.commit()
             return
 
         total_start = time.time()
 
-        # ── Run OCR ──
+        # ── Run OCR (CPU-bound, GIL released — safe to run in parallel) ──
         try:
             ocr_result = process_image(image_full_path)
         except Exception as e:
             print(f"[Worker] OCR crashed for submission #{submission_id}: {e}")
-            submission.status = "ocr_failed"
-            submission.ocr_raw_text = f"OCR engine error: {str(e)}"
-            submission.total_time = time.time() - total_start
-            db.commit()
+            with _db_lock:
+                submission.status = "ocr_failed"
+                submission.ocr_raw_text = f"OCR engine error: {str(e)}"
+                submission.total_time = time.time() - total_start
+                db.commit()
             return
 
         username = ocr_result["extracted_username"]
@@ -104,27 +137,30 @@ def _process_submission(submission_id: int):
         submission.llm_used = llm_used
 
         if username is None:
-            # OCR failed to detect username
-            # Move image to duplicate/failed folder
             _move_image(submission, promoter.name, is_duplicate=True, db=db)
-            submission.status = "ocr_failed"
-            submission.matching_time = 0.0
-            submission.total_time = time.time() - total_start
-            db.commit()
+            with _db_lock:
+                submission.status = "ocr_failed"
+                submission.matching_time = 0.0
+                submission.total_time = time.time() - total_start
+                db.commit()
             print(f"[Worker] Submission #{submission_id}: OCR failed (no username detected)")
             return
 
         submission.extracted_username = username
 
-        # ── Fuzzy Match Duplicate Check ──
+        # ── Fuzzy Match Duplicate Check (uses in-memory cache) ──
         match_start = time.time()
-        all_valid_entries = db.query(ValidUsername).all()
+        # Ensure cache is populated (first run or after restart)
+        with _username_cache_lock:
+            if not _username_cache:
+                _refresh_username_cache(db)
+
+        usernames = get_cached_usernames()
 
         best_match_name = None
         best_score = 0.0
 
-        if all_valid_entries:
-            usernames = [entry.username for entry in all_valid_entries]
+        if usernames:
             fuzz_res = process.extractOne(
                 username,
                 usernames,
@@ -143,9 +179,10 @@ def _process_submission(submission_id: int):
         # Duplicate threshold: 92%
         if best_score >= 92.0:
             _move_image(submission, promoter.name, is_duplicate=True, db=db)
-            submission.status = "duplicate"
-            submission.total_time = time.time() - total_start
-            db.commit()
+            with _db_lock:
+                submission.status = "duplicate"
+                submission.total_time = time.time() - total_start
+                db.commit()
             print(f"[Worker] Submission #{submission_id}: DUPLICATE '{username}' matched '{best_match_name}' ({best_score:.1f}%)")
             return
 
@@ -153,34 +190,40 @@ def _process_submission(submission_id: int):
         _move_image(submission, promoter.name, is_duplicate=False, db=db)
         submission.total_time = time.time() - total_start
 
-        try:
-            valid_entry = ValidUsername(
-                username=username,
-                submission_id=submission.id,
-                promoter_id=promoter.id,
-            )
-            db.add(valid_entry)
-            submission.status = "valid"
-            db.commit()
-            print(f"[Worker] Submission #{submission_id}: VALID '{username}' registered.")
+        with _db_lock:
+            try:
+                valid_entry = ValidUsername(
+                    username=username,
+                    submission_id=submission.id,
+                    promoter_id=promoter.id,
+                )
+                db.add(valid_entry)
+                submission.status = "valid"
+                db.commit()
+                # Update in-memory cache on success
+                _add_to_cache(username)
+                print(f"[Worker] Submission #{submission_id}: VALID '{username}' registered.")
 
-        except IntegrityError:
-            db.rollback()
-            # Race condition: username was inserted by another submission
-            _move_image(submission, promoter.name, is_duplicate=True, db=db)
-            submission.status = "duplicate"
-            submission.similarity = 100.0
-            db.commit()
-            print(f"[Worker] Submission #{submission_id}: DUPLICATE (DB constraint) '{username}'")
+            except IntegrityError:
+                db.rollback()
+                # Race condition: username was inserted by another worker
+                _move_image(submission, promoter.name, is_duplicate=True, db=db)
+                submission.status = "duplicate"
+                submission.similarity = 100.0
+                db.commit()
+                print(f"[Worker] Submission #{submission_id}: DUPLICATE (DB constraint) '{username}'")
 
     except Exception as e:
         print(f"[Worker] Unexpected error processing submission #{submission_id}: {e}")
+        import traceback
+        traceback.print_exc()
         try:
-            submission = db.query(Submission).filter(Submission.id == submission_id).first()
-            if submission and submission.status == "pending":
-                submission.status = "ocr_failed"
-                submission.ocr_raw_text = f"Worker error: {str(e)}"
-                db.commit()
+            with _db_lock:
+                submission = db.query(Submission).filter(Submission.id == submission_id).first()
+                if submission and submission.status == "pending":
+                    submission.status = "ocr_failed"
+                    submission.ocr_raw_text = f"Worker error: {str(e)}"
+                    db.commit()
         except Exception:
             pass
     finally:
@@ -210,26 +253,19 @@ def _move_image(submission: Submission, promoter_name: str, is_duplicate: bool, 
     submission.image_path = str(dest_path.relative_to(UPLOAD_DIR))
 
 
-def _worker_loop():
-    """Main loop for the background worker thread."""
-    print("[Worker] Background OCR worker started.")
-    while True:
-        try:
-            submission_id = _task_queue.get(block=True)  # Block until a task arrives
-            print(f"[Worker] Processing submission #{submission_id}...")
-            _process_submission(submission_id)
-            _task_queue.task_done()
-        except Exception as e:
-            print(f"[Worker] Worker loop error: {e}")
-
-
 def start_worker():
-    """Start the background worker thread (daemon, auto-dies with main process)."""
-    global _worker_thread
-    if _worker_thread is not None and _worker_thread.is_alive():
-        print("[Worker] Worker already running.")
+    """Start the ThreadPoolExecutor for parallel OCR processing."""
+    global _executor
+    if _executor is not None:
+        print("[Worker] Executor already running.")
         return
 
-    _worker_thread = threading.Thread(target=_worker_loop, daemon=True, name="ocr-worker")
-    _worker_thread.start()
-    print("[Worker] Background OCR worker thread started.")
+    _executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS)
+    # Pre-warm the username cache on startup
+    db = SessionLocal()
+    try:
+        _refresh_username_cache(db)
+        print(f"[Worker] Username cache loaded: {len(_username_cache)} entries.")
+    finally:
+        db.close()
+    print(f"[Worker] ThreadPoolExecutor started with {_MAX_WORKERS} workers.")
