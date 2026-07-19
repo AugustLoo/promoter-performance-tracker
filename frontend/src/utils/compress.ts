@@ -4,11 +4,11 @@
  */
 
 /** Maximum width/height for compressed images (pixels) */
-const MAX_DIMENSION = 480;
+const MAX_DIMENSION = 800;
 /** JPEG quality for compression (0.0 to 1.0) */
-const QUALITY = 0.6;
-/** Maximum file size after compression (bytes) — 30KB */
-const MAX_SIZE_BYTES = 30 * 1024;
+const QUALITY = 0.85;
+/** Maximum file size after compression (bytes) — 100KB */
+const MAX_SIZE_BYTES = 100 * 1024;
 
 /**
  * Compress an image file using canvas.
