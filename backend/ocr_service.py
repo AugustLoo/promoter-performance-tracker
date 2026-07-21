@@ -324,6 +324,29 @@ def evaluate_candidates(ocr_lines: List[Dict[str, Any]]) -> Tuple[Optional[str],
     best_candidate, best_score = candidates[0]
     return best_candidate, best_score
 
+def extract_member_id(ocr_lines: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Find the member/membership ID: a digit-only line (5-12 digits after
+    stripping spaces/dashes), preferring one adjacent to a 'member' label.
+    """
+    candidates = []
+    for i, line in enumerate(ocr_lines):
+        digits = re.sub(r"[\s\-]", "", line["text"].strip())
+        if digits.isdigit() and 5 <= len(digits) <= 12:
+            score = 0
+            for offset in (-2, -1, 1):
+                j = i + offset
+                if 0 <= j < len(ocr_lines) and "member" in ocr_lines[j]["text"].lower():
+                    score += 10
+                    break
+            candidates.append((digits, score))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[1], reverse=True)
+    return candidates[0][0]
+
+
 def process_image(image_path: str) -> Dict[str, Any]:
     """
     Fully-rewritten High-Speed OCR Pipeline:
@@ -354,6 +377,7 @@ def process_image(image_path: str) -> Dict[str, Any]:
     # ── Phase 3: Rule Engine ──
     rule_start = time.time()
     extracted_name, candidate_score = evaluate_candidates(ocr_lines)
+    member_id = extract_member_id(ocr_lines)
     rule_time = time.time() - rule_start
     
     llm_used = False
@@ -387,6 +411,7 @@ def process_image(image_path: str) -> Dict[str, Any]:
     
     return {
         "extracted_username": extracted_name,
+        "member_id": member_id,
         "ocr_raw_text": raw_text,
         "ocr_time": prep_time + ocr_time, # Combine prep + ocr engine execution times
         "rule_time": rule_time,

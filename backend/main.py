@@ -16,11 +16,14 @@ from database import init_db
 from routes import upload, leaderboard, admin
 from config import UPLOAD_DIR
 from worker import start_worker
+from schema_migration import run_promoters_migration, run_submissions_migration
 
 # ──────────────────────────────────────────────
 # Initialize database tables on startup
 # ──────────────────────────────────────────────
 init_db()
+run_promoters_migration()
+run_submissions_migration()
 
 # ──────────────────────────────────────────────
 # Start background OCR worker thread

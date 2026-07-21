@@ -195,7 +195,10 @@ async def get_batch_status(
         if sub.status == "pending":
             message = "Processing..."
         elif sub.status == "valid":
-            message = f"Success! Username '{sub.extracted_username}' registered."
+            if sub.member_id:
+                message = f"Success! '{sub.extracted_username}' (Member ID: {sub.member_id}) registered."
+            else:
+                message = f"Success! Username '{sub.extracted_username}' registered."
         elif sub.status == "duplicate":
             if sub.matched_name:
                 message = f"Duplicate! '{sub.extracted_username}' matched '{sub.matched_name}' ({sub.similarity:.1f}%)."
@@ -210,6 +213,8 @@ async def get_batch_status(
             filename=Path(sub.image_path).name if sub.image_path != "__skipped__" else "skipped",
             status=sub.status,
             extracted_username=sub.extracted_username,
+            full_name=sub.full_name,
+            member_id=sub.member_id,
             message=message,
         ))
 

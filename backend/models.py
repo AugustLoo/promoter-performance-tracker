@@ -16,6 +16,8 @@ class SubmissionResult(BaseModel):
     filename: str
     status: str                           # "valid" | "duplicate" | "ocr_failed" | "pending"
     extracted_username: Optional[str] = None
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
     message: str
 
 
@@ -89,6 +91,8 @@ class AdminSubmission(BaseModel):
     promoter_name: str
     ic_number: str
     extracted_username: Optional[str]
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
     status: str
     image_path: str
     created_at: str

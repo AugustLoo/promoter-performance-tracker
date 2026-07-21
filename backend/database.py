@@ -65,6 +65,8 @@ class Submission(Base):
     promoter_id = Column(Integer, ForeignKey("promoters.id"), nullable=False)
     batch_id = Column(String(36), nullable=True, index=True)  # UUID grouping uploads from same submission
     extracted_username = Column(String(100), nullable=True)  # NULL if OCR failed or pending
+    full_name = Column(String(100), nullable=True)           # Member's full name read from the screenshot
+    member_id = Column(String(50), nullable=True)            # Membership number read from the screenshot
     image_path = Column(String(500), nullable=False)         # Relative to uploads/
     status = Column(String(20), nullable=False, default="pending")
     ocr_raw_text = Column(Text, nullable=True)               # Full OCR output for debugging
@@ -106,12 +108,14 @@ class ValidUsername(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(100), nullable=False, unique=True)
+    member_id = Column(String(50), nullable=True)  # Unique when present; NULLs don't collide
     submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False)
     promoter_id = Column(Integer, ForeignKey("promoters.id"), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("idx_valid_username", "username", unique=True),
+        Index("idx_valid_member_id", "member_id", unique=True),
     )
 
     # Relationships

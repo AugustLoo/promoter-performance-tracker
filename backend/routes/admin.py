@@ -155,6 +155,8 @@ async def get_admin_stats(
                 promoter_name=promoter.name,
                 ic_number=promoter.ic_number,
                 extracted_username=sub.extracted_username,
+                full_name=sub.full_name,
+                member_id=sub.member_id,
                 status=sub.status,
                 image_path=sub.image_path,
                 created_at=sub.created_at.isoformat() if sub.created_at else "",

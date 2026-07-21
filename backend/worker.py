@@ -129,6 +129,7 @@ def _process_submission(submission_id: int):
             return
 
         username = ocr_result["extracted_username"]
+        member_id = ocr_result.get("member_id")
         raw_text = ocr_result["ocr_raw_text"]
         ocr_time = ocr_result["ocr_time"]
         rule_time = ocr_result["rule_time"]
@@ -137,6 +138,7 @@ def _process_submission(submission_id: int):
         llm_used = ocr_result["llm_used"]
 
         # Update OCR fields on submission
+        submission.member_id = member_id  # Recorded even if the name wasn't detected
         submission.ocr_raw_text = raw_text
         submission.ocr_time = ocr_time
         submission.rule_time = rule_time
@@ -155,6 +157,26 @@ def _process_submission(submission_id: int):
             return
 
         submission.extracted_username = username
+        submission.full_name = username
+
+        # ── Exact Member-ID Duplicate Check (strongest signal) ──
+        if member_id:
+            existing = (
+                db.query(ValidUsername)
+                .filter(ValidUsername.member_id == member_id)
+                .first()
+            )
+            if existing:
+                submission.matched_name = existing.username
+                submission.similarity = 100.0
+                submission.matching_time = 0.0
+                _move_image(submission, promoter.name, is_duplicate=True, db=db)
+                with _db_lock:
+                    submission.status = "duplicate"
+                    submission.total_time = time.time() - total_start
+                    db.commit()
+                print(f"[Worker] Submission #{submission_id}: DUPLICATE member ID '{member_id}' already registered to '{existing.username}'")
+                return
 
         # ── Fuzzy Match Duplicate Check (uses in-memory cache) ──
         match_start = time.time()
@@ -202,6 +224,7 @@ def _process_submission(submission_id: int):
             try:
                 valid_entry = ValidUsername(
                     username=username,
+                    member_id=member_id,
                     submission_id=submission.id,
                     promoter_id=promoter.id,
                 )

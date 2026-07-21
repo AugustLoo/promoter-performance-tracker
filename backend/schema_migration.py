@@ -37,5 +37,43 @@ def run_promoters_migration():
 
     conn.close()
 
+def run_submissions_migration():
+    if not os.path.exists(DB_PATH):
+        print(f"[Migration] Database file not found at {DB_PATH}. It will be initialized on app startup.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    modified = False
+
+    # submissions: full_name + member_id
+    cursor.execute("PRAGMA table_info(submissions)")
+    columns = [col[1] for col in cursor.fetchall()]
+    for col_name in ("full_name", "member_id"):
+        if col_name not in columns:
+            print(f"[Migration] Adding column '{col_name}' (TEXT) to table 'submissions'...")
+            cursor.execute(f"ALTER TABLE submissions ADD COLUMN {col_name} TEXT")
+            modified = True
+
+    # valid_usernames: member_id + unique index (NULLs don't collide in SQLite)
+    cursor.execute("PRAGMA table_info(valid_usernames)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "member_id" not in columns:
+        print("[Migration] Adding column 'member_id' (TEXT) to table 'valid_usernames'...")
+        cursor.execute("ALTER TABLE valid_usernames ADD COLUMN member_id TEXT")
+        modified = True
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_valid_member_id ON valid_usernames(member_id)")
+
+    if modified:
+        conn.commit()
+        print("[Migration] submissions/valid_usernames migration completed.")
+    else:
+        conn.commit()
+        print("[Migration] No new columns to add. 'submissions'/'valid_usernames' schema is up to date.")
+
+    conn.close()
+
+
 if __name__ == "__main__":
     run_promoters_migration()
+    run_submissions_migration()
