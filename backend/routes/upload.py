@@ -17,7 +17,7 @@ import random
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from database import get_db, Promoter, Submission
@@ -26,6 +26,7 @@ from models import (
     BatchStatusResponse,
     SubmissionResult,
     MySubmissionItem,
+    MySubmissionsRequest,
     MySubmissionsResponse,
 )
 from worker import enqueue_ocr_task
@@ -236,18 +237,37 @@ async def get_batch_status(
     )
 
 
-@router.get("/my-submissions", response_model=MySubmissionsResponse)
+# In-memory rate limiter for history lookups — deters IC-number enumeration.
+# Keyed by client IP (X-Forwarded-For aware since we sit behind Netlify + funnel).
+_lookup_hits: dict = {}
+_LOOKUP_LIMIT = 30      # max lookups
+_LOOKUP_WINDOW = 60.0   # per seconds
+
+
+@router.post("/my-submissions", response_model=MySubmissionsResponse)
 async def my_submissions(
-    ic_number: str,
+    payload: MySubmissionsRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
     A promoter's own submission history, looked up by IC number.
     Powers the "My Uploads" view in the frontend.
+    POST body keeps the IC out of URLs / access logs; rate limiting
+    deters brute-force enumeration of IC numbers.
     """
+    fwd = request.headers.get("x-forwarded-for", "")
+    client_ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+    now = time.time()
+    hits = [t for t in _lookup_hits.get(client_ip, []) if now - t < _LOOKUP_WINDOW]
+    if len(hits) >= _LOOKUP_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many lookups. Please try again in a minute.")
+    hits.append(now)
+    _lookup_hits[client_ip] = hits
+
     promoter = (
         db.query(Promoter)
-        .filter(Promoter.ic_number == ic_number.strip())
+        .filter(Promoter.ic_number == payload.ic_number.strip())
         .first()
     )
     if not promoter:

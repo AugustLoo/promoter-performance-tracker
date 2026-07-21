@@ -66,9 +66,13 @@ export async function fetchBatchStatus(
 export async function fetchMySubmissions(
   icNumber: string
 ): Promise<MySubmissionsResponse> {
-  const res = await fetch(
-    `${API_BASE}/my-submissions?ic_number=${encodeURIComponent(icNumber)}`
-  );
+  // POST body keeps the IC number out of URLs, logs, and browser history
+  const res = await fetch(`${API_BASE}/my-submissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ic_number: icNumber }),
+  });
+  if (res.status === 429) throw new Error("Too many lookups. Please wait a minute.");
   if (!res.ok) throw new Error("Failed to fetch your uploads");
   return res.json();
 }

@@ -46,6 +46,11 @@ class BatchStatusResponse(BaseModel):
     results: List[SubmissionResult]
 
 
+class MySubmissionsRequest(BaseModel):
+    """History lookup request. IC travels in the POST body, never in the URL."""
+    ic_number: str = Field(..., min_length=1, max_length=50)
+
+
 class MySubmissionItem(BaseModel):
     """A single past submission shown in the promoter's own history."""
     id: int
