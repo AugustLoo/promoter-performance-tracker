@@ -8,7 +8,28 @@ export interface SubmissionResult {
   filename: string;
   status: "valid" | "duplicate" | "ocr_failed" | "pending";
   extracted_username: string | null;
+  full_name?: string | null;
+  member_id?: string | null;
   message: string;
+}
+
+// ── My Uploads (submission history) ──
+export interface MySubmissionItem {
+  id: number;
+  status: "valid" | "duplicate" | "ocr_failed" | "pending";
+  full_name: string | null;
+  member_id: string | null;
+  image_url: string | null;
+  created_at: string;
+}
+
+export interface MySubmissionsResponse {
+  promoter_name: string | null;
+  total: number;
+  valid: number;
+  duplicate: number;
+  failed: number;
+  submissions: MySubmissionItem[];
 }
 
 export interface UploadResponse {

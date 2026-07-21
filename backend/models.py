@@ -46,6 +46,26 @@ class BatchStatusResponse(BaseModel):
     results: List[SubmissionResult]
 
 
+class MySubmissionItem(BaseModel):
+    """A single past submission shown in the promoter's own history."""
+    id: int
+    status: str
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
+    image_url: Optional[str] = None
+    created_at: str
+
+
+class MySubmissionsResponse(BaseModel):
+    """A promoter's own submission history, looked up by IC number."""
+    promoter_name: Optional[str] = None
+    total: int
+    valid: int
+    duplicate: int
+    failed: int
+    submissions: List[MySubmissionItem]
+
+
 # ──────────────────────────────────────────────
 # Leaderboard Endpoint
 # ──────────────────────────────────────────────

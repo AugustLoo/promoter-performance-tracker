@@ -1,12 +1,10 @@
 /**
- * UploadZone — Drag & drop file upload area with preview thumbnails.
+ * UploadZone — Camera-first photo capture with preview thumbnails.
  *
- * Features:
- *  - Click to select files from device
- *  - Drag & drop support with visual feedback
- *  - Preview thumbnails for selected images
- *  - Remove individual files before upload
- *  - Accepts only image files (JPEG, PNG, WebP)
+ * Two clear actions on mobile:
+ *  - Snap Photo: opens the phone camera directly (capture="environment")
+ *  - Choose Photos: opens the gallery / file picker (multiple)
+ * Selected photos show as removable thumbnails before upload.
  */
 
 import { useState, useRef, useCallback } from "react";
@@ -18,104 +16,104 @@ interface Props {
   maxFiles?: number;
 }
 
+const CameraIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+    <circle cx="12" cy="13" r="4" />
+  </svg>
+);
+
+const GalleryIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </svg>
+);
+
 export default function UploadZone({ files, onFilesSelected, onRemoveFile, maxFiles = 20 }: Props) {
-  const [dragOver, setDragOver] = useState(false);
   const [limitWarning, setLimitWarning] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
   const remaining = maxFiles - files.length;
 
-  // Filter to only accept image files, enforce max limit
-  const filterImages = useCallback((fileList: FileList | null): File[] => {
-    if (!fileList) return [];
-    const images = Array.from(fileList).filter((f) =>
-      f.type.startsWith("image/")
-    );
-    if (files.length + images.length > maxFiles) {
-      const allowed = images.slice(0, remaining);
-      setLimitWarning(`Maximum ${maxFiles} files per upload. ${images.length - allowed.length} file(s) were not added.`);
-      setTimeout(() => setLimitWarning(""), 4000);
-      return allowed;
-    }
-    setLimitWarning("");
-    return images;
-  }, [files.length, maxFiles, remaining]);
+  const filterImages = useCallback(
+    (fileList: FileList | null): File[] => {
+      if (!fileList) return [];
+      const images = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+      if (files.length + images.length > maxFiles) {
+        const allowed = images.slice(0, remaining);
+        setLimitWarning(
+          `Maximum ${maxFiles} photos per upload. ${images.length - allowed.length} photo(s) were not added.`
+        );
+        setTimeout(() => setLimitWarning(""), 4000);
+        return allowed;
+      }
+      setLimitWarning("");
+      return images;
+    },
+    [files.length, maxFiles, remaining]
+  );
 
-  // Handle click to open file picker
-  const handleClick = () => {
-    inputRef.current?.click();
-  };
-
-  // Handle file input change
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = filterImages(e.target.files);
-    if (selected.length > 0) {
-      onFilesSelected(selected);
-    }
-    // Reset input so the same file can be re-selected
-    if (inputRef.current) inputRef.current.value = "";
-  };
-
-  // Drag & drop handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const dropped = filterImages(e.dataTransfer.files);
-    if (dropped.length > 0) {
-      onFilesSelected(dropped);
-    }
+    if (selected.length > 0) onFilesSelected(selected);
+    e.target.value = "";
   };
 
   return (
     <div>
-      {/* Drop Zone */}
-      <div
-        className={`upload-zone ${dragOver ? "drag-over" : ""}`}
-        onClick={handleClick}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <div className="upload-zone-icon">📁</div>
-        <div className="upload-zone-text">
-          {dragOver
-            ? "Drop images here..."
-            : remaining <= 0
-            ? "Maximum files reached"
-            : "Tap to select or drag & drop screenshots"}
-        </div>
-        <div className="upload-zone-hint">
-          Supports JPEG, PNG, WebP • Max 5MB per file • Up to {maxFiles} files
-        </div>
-
-        {limitWarning && (
-          <div className="upload-zone-warning">
-            ⚠️ {limitWarning}
-          </div>
-        )}
-
-        <input
-          ref={inputRef}
-          className="upload-zone-input"
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={handleChange}
+      <div className="capture-row">
+        <button
+          type="button"
+          className="capture-btn"
+          onClick={() => cameraRef.current?.click()}
           disabled={remaining <= 0}
-        />
+        >
+          <CameraIcon />
+          <span className="capture-btn-label">Snap Photo</span>
+          <span className="capture-btn-hint">Open camera</span>
+        </button>
+
+        <button
+          type="button"
+          className="capture-btn"
+          onClick={() => galleryRef.current?.click()}
+          disabled={remaining <= 0}
+        >
+          <GalleryIcon />
+          <span className="capture-btn-label">Choose Photos</span>
+          <span className="capture-btn-hint">From gallery</span>
+        </button>
       </div>
 
-      {/* Preview Grid */}
+      {/* Hidden inputs: camera capture + multi-select gallery */}
+      <input
+        ref={cameraRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleChange}
+        style={{ display: "none" }}
+      />
+      <input
+        ref={galleryRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={handleChange}
+        style={{ display: "none" }}
+      />
+
+      {files.length > 0 && (
+        <div className="capture-count">
+          {files.length} photo{files.length !== 1 ? "s" : ""} ready · {remaining} more allowed
+        </div>
+      )}
+
+      {limitWarning && <div className="upload-zone-warning">{limitWarning}</div>}
+
       {files.length > 0 && (
         <div className="preview-grid">
           {files.map((file, index) => (
@@ -124,7 +122,6 @@ export default function UploadZone({ files, onFilesSelected, onRemoveFile, maxFi
                 src={URL.createObjectURL(file)}
                 alt={file.name}
                 onLoad={(e) => {
-                  // Revoke object URL after image loads to free memory
                   URL.revokeObjectURL((e.target as HTMLImageElement).src);
                 }}
               />

@@ -9,6 +9,7 @@ import type {
   LeaderboardResponse,
   AdminLoginResponse,
   AdminStatsResponse,
+  MySubmissionsResponse,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -56,6 +57,19 @@ export async function fetchBatchStatus(
     throw new Error("Failed to fetch batch status");
   }
 
+  return res.json();
+}
+
+/**
+ * Fetch the promoter's own submission history by IC number.
+ */
+export async function fetchMySubmissions(
+  icNumber: string
+): Promise<MySubmissionsResponse> {
+  const res = await fetch(
+    `${API_BASE}/my-submissions?ic_number=${encodeURIComponent(icNumber)}`
+  );
+  if (!res.ok) throw new Error("Failed to fetch your uploads");
   return res.json();
 }
 

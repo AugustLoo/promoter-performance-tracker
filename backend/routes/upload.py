@@ -21,7 +21,13 @@ from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db, Promoter, Submission
-from models import BatchUploadResponse, BatchStatusResponse, SubmissionResult
+from models import (
+    BatchUploadResponse,
+    BatchStatusResponse,
+    SubmissionResult,
+    MySubmissionItem,
+    MySubmissionsResponse,
+)
 from worker import enqueue_ocr_task
 from utils import get_storage_path, generate_filename
 from config import MAX_FILE_SIZE_MB, MAX_FILES_PER_UPLOAD, UPLOAD_DIR
@@ -227,4 +233,53 @@ async def get_batch_status(
         completed=completed,
         pending=pending,
         results=results,
+    )
+
+
+@router.get("/my-submissions", response_model=MySubmissionsResponse)
+async def my_submissions(
+    ic_number: str,
+    db: Session = Depends(get_db),
+):
+    """
+    A promoter's own submission history, looked up by IC number.
+    Powers the "My Uploads" view in the frontend.
+    """
+    promoter = (
+        db.query(Promoter)
+        .filter(Promoter.ic_number == ic_number.strip())
+        .first()
+    )
+    if not promoter:
+        return MySubmissionsResponse(
+            promoter_name=None, total=0, valid=0, duplicate=0, failed=0, submissions=[]
+        )
+
+    subs = (
+        db.query(Submission)
+        .filter(Submission.promoter_id == promoter.id)
+        .order_by(Submission.created_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    items = [
+        MySubmissionItem(
+            id=s.id,
+            status=s.status,
+            full_name=s.full_name or s.extracted_username,
+            member_id=s.member_id,
+            image_url=None if s.image_path == "__skipped__" else f"/uploads/{s.image_path}",
+            created_at=s.created_at.isoformat() if s.created_at else "",
+        )
+        for s in subs
+    ]
+
+    return MySubmissionsResponse(
+        promoter_name=promoter.name,
+        total=len(items),
+        valid=sum(1 for i in items if i.status == "valid"),
+        duplicate=sum(1 for i in items if i.status == "duplicate"),
+        failed=sum(1 for i in items if i.status == "ocr_failed"),
+        submissions=items,
     )
