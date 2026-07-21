@@ -17,7 +17,7 @@ import random
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db, Promoter, Submission
@@ -238,40 +238,63 @@ async def get_batch_status(
 
 
 # In-memory rate limiter for history lookups — deters IC-number enumeration.
-# Keyed by client IP (X-Forwarded-For aware since we sit behind Netlify + funnel).
-_lookup_hits: dict = {}
-_LOOKUP_LIMIT = 30      # max lookups
-_LOOKUP_WINDOW = 60.0   # per seconds
+#
+# Keyed only on values a caller CANNOT forge to buy more throughput:
+#   • a global cap  — bounds the total enumeration rate regardless of source
+#   • a per-IC cap  — bounds hammering any single person's history
+# Client IP is deliberately NOT used: the backend is reachable directly via
+# the tunnel, where X-Forwarded-For / X-Nf-Client-Connection-Ip can be spoofed
+# per request, so an IP-keyed limiter is trivially bypassed.
+_global_hits: list = []
+_per_ic_hits: dict = {}
+_GLOBAL_LIMIT = 120     # total lookups per window (all callers combined)
+_PER_IC_LIMIT = 10      # lookups per window for any single IC number
+_LOOKUP_WINDOW = 60.0   # seconds
+
+
+def _lookup_rate_limited(ic_key: str) -> bool:
+    """Return True if this lookup should be rejected. Runs in the event loop
+    (no await between check and record), so the section is effectively atomic."""
+    global _global_hits
+    now = time.time()
+
+    _global_hits = [t for t in _global_hits if now - t < _LOOKUP_WINDOW]
+    ic_hits = [t for t in _per_ic_hits.get(ic_key, []) if now - t < _LOOKUP_WINDOW]
+
+    if len(_global_hits) >= _GLOBAL_LIMIT or len(ic_hits) >= _PER_IC_LIMIT:
+        return True
+
+    _global_hits.append(now)
+    ic_hits.append(now)
+    _per_ic_hits[ic_key] = ic_hits
+
+    # Bound memory: drop IC buckets that have fully aged out
+    if len(_per_ic_hits) > 5000:
+        stale = [k for k, v in _per_ic_hits.items() if not any(now - t < _LOOKUP_WINDOW for t in v)]
+        for k in stale:
+            _per_ic_hits.pop(k, None)
+
+    return False
 
 
 @router.post("/my-submissions", response_model=MySubmissionsResponse)
 async def my_submissions(
     payload: MySubmissionsRequest,
-    request: Request,
     db: Session = Depends(get_db),
 ):
     """
     A promoter's own submission history, looked up by IC number.
     Powers the "My Uploads" view in the frontend.
-    POST body keeps the IC out of URLs / access logs; rate limiting
-    deters brute-force enumeration of IC numbers.
+    POST body keeps the IC out of URLs / access logs; the global + per-IC
+    rate limit deters brute-force enumeration of IC numbers.
     """
-    fwd = request.headers.get("x-forwarded-for", "")
-    client_ip = (
-        request.headers.get("x-nf-client-connection-ip")  # real client IP when proxied via Netlify
-        or (fwd.split(",")[0].strip() if fwd else None)
-        or (request.client.host if request.client else "?")
-    )
-    now = time.time()
-    hits = [t for t in _lookup_hits.get(client_ip, []) if now - t < _LOOKUP_WINDOW]
-    if len(hits) >= _LOOKUP_LIMIT:
+    ic = payload.ic_number.strip()
+    if _lookup_rate_limited(ic):
         raise HTTPException(status_code=429, detail="Too many lookups. Please try again in a minute.")
-    hits.append(now)
-    _lookup_hits[client_ip] = hits
 
     promoter = (
         db.query(Promoter)
-        .filter(Promoter.ic_number == payload.ic_number.strip())
+        .filter(Promoter.ic_number == ic)
         .first()
     )
     if not promoter:
