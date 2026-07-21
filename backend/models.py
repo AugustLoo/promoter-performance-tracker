@@ -150,3 +150,67 @@ class AdminStatsResponse(BaseModel):
 class BatchDeleteRequest(BaseModel):
     """Request payload to delete multiple submissions at once."""
     ids: List[int]
+
+
+# ──────────────────────────────────────────────
+# Events & Roster
+# ──────────────────────────────────────────────
+
+class EventOption(BaseModel):
+    """Minimal event info for the phone picker."""
+    id: int
+    name: str
+
+
+class EventItem(BaseModel):
+    """An event row for the admin dashboard."""
+    id: int
+    name: str
+    active: bool
+    valid_count: int = 0
+    total_uploads: int = 0
+
+
+class EventCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class EventUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    active: Optional[bool] = None
+
+
+class PromoterLoginRequest(BaseModel):
+    ic_number: str = Field(..., min_length=1, max_length=50)
+
+
+class PromoterLoginResponse(BaseModel):
+    """Result of an IC login on the phone."""
+    registered: bool
+    name: Optional[str] = None
+    gender: Optional[str] = None
+    events: List[EventOption] = []   # assigned-open events, or all open if none/unregistered
+
+
+class AdminPromoterItem(BaseModel):
+    id: int
+    name: str
+    ic_number: str
+    gender: Optional[str] = None
+    avatar: Optional[str] = None
+    created_at: str
+    valid_count: int = 0
+    event_ids: List[int] = []
+
+
+class PromoterCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    ic_number: str = Field(..., min_length=1, max_length=50)
+    gender: Optional[str] = "female"
+    event_ids: List[int] = []
+
+
+class PromoterUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    gender: Optional[str] = None
+    event_ids: Optional[List[int]] = None

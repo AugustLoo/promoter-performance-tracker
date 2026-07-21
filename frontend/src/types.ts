@@ -104,6 +104,38 @@ export interface AdminStatsResponse {
   days: string[];
 }
 
+// ── Events & Roster ──
+export interface EventOption {
+  id: number;
+  name: string;
+}
+
+export interface PromoterLoginResponse {
+  registered: boolean;
+  name?: string | null;
+  gender?: string | null;
+  events: EventOption[];
+}
+
+export interface EventItem {
+  id: number;
+  name: string;
+  active: boolean;
+  valid_count: number;
+  total_uploads: number;
+}
+
+export interface AdminPromoterItem {
+  id: number;
+  name: string;
+  ic_number: string;
+  gender?: string;
+  avatar?: string;
+  created_at: string;
+  valid_count: number;
+  event_ids: number[];
+}
+
 // ── Promoter Info (stored in LocalStorage) ──
 export interface PromoterInfo {
   name: string;

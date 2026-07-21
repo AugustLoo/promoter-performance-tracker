@@ -10,6 +10,9 @@ import type {
   AdminLoginResponse,
   AdminStatsResponse,
   MySubmissionsResponse,
+  PromoterLoginResponse,
+  EventItem,
+  AdminPromoterItem,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -59,6 +62,93 @@ export async function fetchBatchStatus(
     throw new Error("Failed to fetch batch status");
   }
 
+  return res.json();
+}
+
+/**
+ * Log in on the phone by IC number.
+ * Returns whether the promoter is registered, their name, and the events
+ * they can upload to (assigned-open, or all open if unregistered/unassigned).
+ */
+export async function promoterLogin(icNumber: string): Promise<PromoterLoginResponse> {
+  const res = await fetch(`${API_BASE}/promoter/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ic_number: icNumber }),
+  });
+  if (res.status === 429) throw new Error("Too many attempts. Please wait a minute.");
+  if (!res.ok) throw new Error("Login failed. Please try again.");
+  return res.json();
+}
+
+/** Admin: list all events with counts. */
+export async function fetchEvents(token: string): Promise<EventItem[]> {
+  const res = await fetch(`${API_BASE}/admin/events`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) { sessionStorage.removeItem("admin_token"); throw new Error("Session expired. Please log in again."); }
+  if (!res.ok) throw new Error("Failed to load events");
+  return res.json();
+}
+
+/** Admin: create an event. */
+export async function createEvent(token: string, name: string): Promise<EventItem> {
+  const res = await fetch(`${API_BASE}/admin/events`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to create event" }));
+    throw new Error(err.detail || "Failed to create event");
+  }
+  return res.json();
+}
+
+/** Admin: update an event (rename and/or open/close). */
+export async function updateEvent(
+  token: string,
+  id: number,
+  patch: { name?: string; active?: boolean }
+): Promise<EventItem> {
+  const res = await fetch(`${API_BASE}/admin/events/${id}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update event");
+  return res.json();
+}
+
+/** Admin: create a promoter with event assignments. */
+export async function createPromoter(
+  token: string,
+  data: { name: string; ic_number: string; gender: string; event_ids: number[] }
+): Promise<AdminPromoterItem> {
+  const res = await fetch(`${API_BASE}/admin/promoters`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to add promoter" }));
+    throw new Error(err.detail || "Failed to add promoter");
+  }
+  return res.json();
+}
+
+/** Admin: update a promoter (name, gender, event assignments). */
+export async function updatePromoter(
+  token: string,
+  id: number,
+  patch: { name?: string; gender?: string; event_ids?: number[] }
+): Promise<AdminPromoterItem> {
+  const res = await fetch(`${API_BASE}/admin/promoters/${id}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update promoter");
   return res.json();
 }
 
@@ -227,14 +317,7 @@ export async function deleteSubmissionsBatch(
  */
 export async function fetchAdminPromoters(
   token: string
-): Promise<Array<{
-  id: number;
-  name: string;
-  ic_number: string;
-  gender: string;
-  avatar?: string;
-  created_at: string;
-}>> {
+): Promise<AdminPromoterItem[]> {
   const res = await fetch(`${API_BASE}/admin/promoters`, {
     headers: { Authorization: `Bearer ${token}` },
   });

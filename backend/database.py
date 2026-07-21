@@ -11,7 +11,7 @@ Tables:
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text,
-    DateTime, ForeignKey, CheckConstraint, Index, Float, Boolean
+    DateTime, ForeignKey, CheckConstraint, Index, Float, Boolean, Table
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -33,6 +33,25 @@ Base = declarative_base()
 # ORM Models
 # ──────────────────────────────────────────────
 
+# Many-to-many: which events each promoter is assigned to
+promoter_events = Table(
+    "promoter_events",
+    Base.metadata,
+    Column("promoter_id", Integer, ForeignKey("promoters.id"), primary_key=True),
+    Column("event_id", Integer, ForeignKey("events.id"), primary_key=True),
+)
+
+
+class Event(Base):
+    """A campaign event / activation location, managed from the dashboard."""
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    active = Column(Boolean, nullable=False, default=True)  # open events show on the phone
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class Promoter(Base):
     """A promoter identified by their unique IC number."""
     __tablename__ = "promoters"
@@ -47,6 +66,7 @@ class Promoter(Base):
     # Relationships
     submissions = relationship("Submission", back_populates="promoter", lazy="dynamic")
     valid_usernames = relationship("ValidUsername", back_populates="promoter", lazy="dynamic")
+    events = relationship("Event", secondary=promoter_events, backref="promoters")
 
     # Index for fast IC lookups
     __table_args__ = (

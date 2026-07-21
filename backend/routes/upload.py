@@ -20,7 +20,7 @@ from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from database import get_db, Promoter, Submission
+from database import get_db, Promoter, Submission, Event
 from models import (
     BatchUploadResponse,
     BatchStatusResponse,
@@ -28,6 +28,9 @@ from models import (
     MySubmissionItem,
     MySubmissionsRequest,
     MySubmissionsResponse,
+    PromoterLoginRequest,
+    PromoterLoginResponse,
+    EventOption,
 )
 from worker import enqueue_ocr_task
 from utils import get_storage_path, generate_filename
@@ -281,6 +284,49 @@ def _lookup_rate_limited(ic_key: str) -> bool:
             _per_ic_hits.pop(k, None)
 
     return False
+
+
+@router.get("/events/open", response_model=List[EventOption])
+async def open_events(db: Session = Depends(get_db)):
+    """Public: list currently-open events (for the phone picker)."""
+    events = db.query(Event).filter(Event.active == True).order_by(Event.name).all()  # noqa: E712
+    return [EventOption(id=e.id, name=e.name) for e in events]
+
+
+@router.post("/promoter/login", response_model=PromoterLoginResponse)
+async def promoter_login(
+    payload: PromoterLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Phone login by IC number.
+      - Registered promoter → returns their name + assigned open events
+        (or all open events if they have no assignments).
+      - Unregistered IC → registered=false + all open events (self-register).
+    """
+    ic = payload.ic_number.strip()
+    if _lookup_rate_limited(ic):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again in a minute.")
+
+    all_open = db.query(Event).filter(Event.active == True).order_by(Event.name).all()  # noqa: E712
+
+    promoter = db.query(Promoter).filter(Promoter.ic_number == ic).first()
+    if not promoter:
+        return PromoterLoginResponse(
+            registered=False,
+            events=[EventOption(id=e.id, name=e.name) for e in all_open],
+        )
+
+    assigned_open = [e for e in promoter.events if e.active]
+    visible = assigned_open if assigned_open else all_open
+    visible.sort(key=lambda e: e.name)
+
+    return PromoterLoginResponse(
+        registered=True,
+        name=promoter.name,
+        gender=promoter.gender,
+        events=[EventOption(id=e.id, name=e.name) for e in visible],
+    )
 
 
 @router.post("/my-submissions", response_model=MySubmissionsResponse)

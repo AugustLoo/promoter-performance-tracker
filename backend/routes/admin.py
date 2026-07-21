@@ -15,21 +15,28 @@ import io
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from database import get_db, Promoter, Submission, ValidUsername
+from database import get_db, Promoter, Submission, ValidUsername, Event
 from worker import remove_from_cache
+from routes.upload import get_random_avatar
 from models import (
     AdminLoginRequest,
     AdminLoginResponse,
     AdminStatsResponse,
     AdminSubmission,
     BatchDeleteRequest,
+    EventItem,
+    EventCreate,
+    EventUpdate,
+    AdminPromoterItem,
+    PromoterCreate,
+    PromoterUpdate,
 )
 from config import ADMIN_PIN, ADMIN_TOKEN_EXPIRY
 
@@ -454,24 +461,164 @@ async def delete_submissions_batch(
     }
 
 
-@router.get("/admin/promoters")
+@router.get("/admin/promoters", response_model=List[AdminPromoterItem])
 async def get_admin_promoters(
     db: Session = Depends(get_db),
     _: bool = Depends(verify_admin_token),
 ):
-    """
-    Retrieve all promoters, including their name, IC number, and gender.
-    """
+    """Retrieve all promoters with their valid-signup count and assigned events."""
     promoters = db.query(Promoter).order_by(Promoter.name.asc()).all()
+    counts = dict(
+        db.query(ValidUsername.promoter_id, func.count(ValidUsername.id))
+        .group_by(ValidUsername.promoter_id)
+        .all()
+    )
     return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "ic_number": p.ic_number,
-            "gender": p.gender or "unknown",
-            "avatar": p.avatar,
-            "created_at": p.created_at.isoformat() if p.created_at else "",
-        }
+        AdminPromoterItem(
+            id=p.id,
+            name=p.name,
+            ic_number=p.ic_number,
+            gender=p.gender or "unknown",
+            avatar=p.avatar,
+            created_at=p.created_at.isoformat() if p.created_at else "",
+            valid_count=counts.get(p.id, 0),
+            event_ids=[e.id for e in p.events],
+        )
         for p in promoters
     ]
+
+
+# ──────────────────────────────────────────────
+# Events management
+# ──────────────────────────────────────────────
+
+@router.get("/admin/events", response_model=List[EventItem])
+async def list_events(
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    """All events with per-event valid + total upload counts."""
+    events = db.query(Event).order_by(Event.name.asc()).all()
+    valid_counts = dict(
+        db.query(Submission.event, func.count(Submission.id))
+        .filter(Submission.status == "valid")
+        .group_by(Submission.event)
+        .all()
+    )
+    total_counts = dict(
+        db.query(Submission.event, func.count(Submission.id))
+        .group_by(Submission.event)
+        .all()
+    )
+    return [
+        EventItem(
+            id=e.id,
+            name=e.name,
+            active=bool(e.active),
+            valid_count=valid_counts.get(e.name, 0),
+            total_uploads=total_counts.get(e.name, 0),
+        )
+        for e in events
+    ]
+
+
+@router.post("/admin/events", response_model=EventItem)
+async def create_event(
+    payload: EventCreate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    name = payload.name.strip()
+    existing = db.query(Event).filter(Event.name == name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An event with that name already exists.")
+    event = Event(name=name, active=True)
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return EventItem(id=event.id, name=event.name, active=True, valid_count=0, total_uploads=0)
+
+
+@router.patch("/admin/events/{event_id}", response_model=EventItem)
+async def update_event(
+    event_id: int,
+    payload: EventUpdate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    if payload.name is not None:
+        event.name = payload.name.strip()
+    if payload.active is not None:
+        event.active = payload.active
+    db.commit()
+    db.refresh(event)
+    valid = db.query(func.count(Submission.id)).filter(
+        Submission.event == event.name, Submission.status == "valid"
+    ).scalar() or 0
+    total = db.query(func.count(Submission.id)).filter(Submission.event == event.name).scalar() or 0
+    return EventItem(id=event.id, name=event.name, active=bool(event.active), valid_count=valid, total_uploads=total)
+
+
+# ──────────────────────────────────────────────
+# Promoter roster management
+# ──────────────────────────────────────────────
+
+def _assign_events(promoter: Promoter, event_ids: List[int], db: Session):
+    events = db.query(Event).filter(Event.id.in_(event_ids)).all() if event_ids else []
+    promoter.events = events
+
+
+@router.post("/admin/promoters", response_model=AdminPromoterItem)
+async def create_promoter(
+    payload: PromoterCreate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    ic = payload.ic_number.strip()
+    existing = db.query(Promoter).filter(Promoter.ic_number == ic).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="A promoter with that IC already exists.")
+    gender = "male" if (payload.gender or "").strip().lower() == "male" else "female"
+    avatar = get_random_avatar(gender, db)
+    promoter = Promoter(name=payload.name.strip(), ic_number=ic, gender=gender, avatar=avatar)
+    _assign_events(promoter, payload.event_ids, db)
+    db.add(promoter)
+    db.commit()
+    db.refresh(promoter)
+    return AdminPromoterItem(
+        id=promoter.id, name=promoter.name, ic_number=promoter.ic_number,
+        gender=promoter.gender, avatar=promoter.avatar,
+        created_at=promoter.created_at.isoformat() if promoter.created_at else "",
+        valid_count=0, event_ids=[e.id for e in promoter.events],
+    )
+
+
+@router.patch("/admin/promoters/{promoter_id}", response_model=AdminPromoterItem)
+async def update_promoter(
+    promoter_id: int,
+    payload: PromoterUpdate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    promoter = db.query(Promoter).filter(Promoter.id == promoter_id).first()
+    if not promoter:
+        raise HTTPException(status_code=404, detail="Promoter not found.")
+    if payload.name is not None:
+        promoter.name = payload.name.strip()
+    if payload.gender is not None:
+        promoter.gender = "male" if payload.gender.strip().lower() == "male" else "female"
+    if payload.event_ids is not None:
+        _assign_events(promoter, payload.event_ids, db)
+    db.commit()
+    db.refresh(promoter)
+    valid = db.query(func.count(ValidUsername.id)).filter(ValidUsername.promoter_id == promoter.id).scalar() or 0
+    return AdminPromoterItem(
+        id=promoter.id, name=promoter.name, ic_number=promoter.ic_number,
+        gender=promoter.gender, avatar=promoter.avatar,
+        created_at=promoter.created_at.isoformat() if promoter.created_at else "",
+        valid_count=valid, event_ids=[e.id for e in promoter.events],
+    )
 

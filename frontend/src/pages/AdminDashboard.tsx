@@ -17,9 +17,14 @@ import {
   deleteSubmission,
   deleteSubmissionsBatch,
   fetchAdminPromoters,
-  downloadExport
+  downloadExport,
+  fetchEvents,
+  createEvent,
+  updateEvent,
+  createPromoter,
+  updatePromoter,
 } from "../utils/api";
-import type { AdminStatsResponse } from "../types";
+import type { AdminStatsResponse, EventItem, AdminPromoterItem } from "../types";
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -32,9 +37,19 @@ export default function AdminDashboard() {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [showPromotersModal, setShowPromotersModal] = useState(false);
-  const [promotersList, setPromotersList] = useState<any[]>([]);
+  const [promotersList, setPromotersList] = useState<AdminPromoterItem[]>([]);
   const [promotersLoading, setPromotersLoading] = useState(false);
   const [promotersError, setPromotersError] = useState<string | null>(null);
+
+  // Events management
+  const [showEventsModal, setShowEventsModal] = useState(false);
+  const [eventsList, setEventsList] = useState<EventItem[]>([]);
+  const [eventsBusy, setEventsBusy] = useState(false);
+  const [newEventName, setNewEventName] = useState("");
+  const [manageError, setManageError] = useState<string | null>(null);
+
+  // Add-promoter form (inside Team modal)
+  const [newProm, setNewProm] = useState({ name: "", ic_number: "", gender: "female", event_ids: [] as number[] });
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [showBatchConfirmModal, setShowBatchConfirmModal] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -158,13 +173,97 @@ export default function AdminDashboard() {
     setPromotersLoading(true);
     setPromotersError(null);
     try {
-      const list = await fetchAdminPromoters(token);
+      const [list, evs] = await Promise.all([fetchAdminPromoters(token), fetchEvents(token)]);
       setPromotersList(list);
+      setEventsList(evs);
     } catch (err) {
       setPromotersError(err instanceof Error ? err.message : "Failed to load promoters");
     } finally {
       setPromotersLoading(false);
     }
+  };
+
+  // ── Events management ──
+  const openEventsModal = async () => {
+    if (!token) return;
+    setShowEventsModal(true);
+    setManageError(null);
+    setEventsBusy(true);
+    try {
+      setEventsList(await fetchEvents(token));
+    } catch (err) {
+      setManageError(err instanceof Error ? err.message : "Failed to load events");
+    } finally {
+      setEventsBusy(false);
+    }
+  };
+
+  const handleAddEvent = async () => {
+    if (!token || !newEventName.trim()) return;
+    setManageError(null);
+    try {
+      await createEvent(token, newEventName.trim());
+      setNewEventName("");
+      setEventsList(await fetchEvents(token));
+    } catch (err) {
+      setManageError(err instanceof Error ? err.message : "Failed to add event");
+    }
+  };
+
+  const handleToggleEvent = async (ev: EventItem) => {
+    if (!token) return;
+    setManageError(null);
+    try {
+      await updateEvent(token, ev.id, { active: !ev.active });
+      setEventsList(await fetchEvents(token));
+    } catch (err) {
+      setManageError(err instanceof Error ? err.message : "Failed to update event");
+    }
+  };
+
+  // ── Team / roster management ──
+  const reloadPromoters = async () => {
+    if (!token) return;
+    setPromotersList(await fetchAdminPromoters(token));
+  };
+
+  const handleAddPromoter = async () => {
+    if (!token || !newProm.name.trim() || !newProm.ic_number.trim()) return;
+    setPromotersError(null);
+    try {
+      await createPromoter(token, {
+        name: newProm.name.trim(),
+        ic_number: newProm.ic_number.trim(),
+        gender: newProm.gender,
+        event_ids: newProm.event_ids,
+      });
+      setNewProm({ name: "", ic_number: "", gender: "female", event_ids: [] });
+      await reloadPromoters();
+    } catch (err) {
+      setPromotersError(err instanceof Error ? err.message : "Failed to add promoter");
+    }
+  };
+
+  const handleTogglePromoterEvent = async (prom: AdminPromoterItem, eventId: number) => {
+    if (!token) return;
+    const next = prom.event_ids.includes(eventId)
+      ? prom.event_ids.filter((id) => id !== eventId)
+      : [...prom.event_ids, eventId];
+    try {
+      await updatePromoter(token, prom.id, { event_ids: next });
+      await reloadPromoters();
+    } catch (err) {
+      setPromotersError(err instanceof Error ? err.message : "Failed to update assignment");
+    }
+  };
+
+  const toggleNewPromEvent = (eventId: number) => {
+    setNewProm((prev) => ({
+      ...prev,
+      event_ids: prev.event_ids.includes(eventId)
+        ? prev.event_ids.filter((id) => id !== eventId)
+        : [...prev.event_ids, eventId],
+    }));
   };
 
   // Delete submission handler
@@ -233,7 +332,13 @@ export default function AdminDashboard() {
             Monitor all submissions and promoter activity
           </p>
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button className="btn btn-secondary btn-sm" onClick={openEventsModal}>
+            🎪 Events
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={handlePromotersCardClick}>
+            👥 Team
+          </button>
           <button
             className="btn btn-primary btn-sm"
             onClick={handleExport}
@@ -500,56 +605,139 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* Promoters List Modal */}
+      {/* Events Management Modal */}
+      {showEventsModal && (
+        <div className="modal-overlay" onClick={() => setShowEventsModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">🎪 Events</h2>
+              <button className="modal-close" onClick={() => setShowEventsModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <input
+                  className="form-input"
+                  placeholder="New event name (e.g. MyTown Concourse)"
+                  value={newEventName}
+                  onChange={(e) => setNewEventName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddEvent()}
+                />
+                <button className="btn btn-primary btn-sm" onClick={handleAddEvent} disabled={!newEventName.trim()}>
+                  Add
+                </button>
+              </div>
+              {manageError && <div className="error-alert" style={{ marginBottom: 12 }}>{manageError}</div>}
+              {eventsBusy ? (
+                <div style={{ display: "flex", justifyContent: "center", padding: "30px 0" }}><div className="spinner" /></div>
+              ) : eventsList.length === 0 ? (
+                <div className="empty-text">No events yet. Add one above.</div>
+              ) : (
+                <div className="modal-table-wrapper">
+                  <table className="modal-table">
+                    <thead>
+                      <tr><th>Event</th><th>Valid</th><th>Uploads</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                      {eventsList.map((ev) => (
+                        <tr key={ev.id}>
+                          <td style={{ fontWeight: 600 }}>{ev.name}</td>
+                          <td>{ev.valid_count}</td>
+                          <td>{ev.total_uploads}</td>
+                          <td>
+                            <button
+                              className={`btn btn-sm ${ev.active ? "btn-secondary" : "btn-primary"}`}
+                              onClick={() => handleToggleEvent(ev)}
+                            >
+                              {ev.active ? "Open · Close it" : "Closed · Open it"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Team / Roster Modal */}
       {showPromotersModal && (
         <div className="modal-overlay" onClick={() => setShowPromotersModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2 className="modal-title">👥 Registered Promoters</h2>
+              <h2 className="modal-title">👥 Team</h2>
               <button className="modal-close" onClick={() => setShowPromotersModal(false)}>×</button>
             </div>
             <div className="modal-body">
-              {promotersLoading && (
-                <div style={{ display: "flex", justifyContent: "center", padding: "40px 0" }}>
-                  <div className="spinner" />
+              {/* Add promoter */}
+              <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: 14, marginBottom: 18 }}>
+                <div style={{ fontWeight: 600, marginBottom: 10 }}>Add promoter</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                  <input className="form-input" style={{ flex: 1, minWidth: 140 }} placeholder="Name"
+                    value={newProm.name} onChange={(e) => setNewProm({ ...newProm, name: e.target.value })} />
+                  <input className="form-input" style={{ flex: 1, minWidth: 140 }} placeholder="IC number"
+                    value={newProm.ic_number} onChange={(e) => setNewProm({ ...newProm, ic_number: e.target.value })} />
+                  <select className="form-input" style={{ maxWidth: 120 }}
+                    value={newProm.gender} onChange={(e) => setNewProm({ ...newProm, gender: e.target.value })}>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                  </select>
                 </div>
-              )}
-              {promotersError && (
-                <div className="error-alert">⚠️ {promotersError}</div>
-              )}
-              {!promotersLoading && !promotersError && (
+                {eventsList.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                    {eventsList.map((ev) => (
+                      <label key={ev.id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.82rem" }}>
+                        <input type="checkbox" checked={newProm.event_ids.includes(ev.id)} onChange={() => toggleNewPromEvent(ev.id)} />
+                        {ev.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <button className="btn btn-primary btn-sm" onClick={handleAddPromoter}
+                  disabled={!newProm.name.trim() || !newProm.ic_number.trim()}>
+                  Add to team
+                </button>
+              </div>
+
+              {promotersError && <div className="error-alert" style={{ marginBottom: 12 }}>{promotersError}</div>}
+
+              {promotersLoading ? (
+                <div style={{ display: "flex", justifyContent: "center", padding: "30px 0" }}><div className="spinner" /></div>
+              ) : (
                 <div className="modal-table-wrapper">
                   <table className="modal-table">
                     <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>IC Number</th>
-                        <th>Gender</th>
-                      </tr>
+                      <tr><th>Name</th><th>IC</th><th>Signups</th><th>Assigned events</th></tr>
                     </thead>
                     <tbody>
                       {promotersList.map((p) => (
                         <tr key={p.id}>
-                          <td>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                              <img
-                                src={p.avatar || "/avatars/avatar_m1.png"}
-                                alt={p.name}
-                                style={{
-                                  width: 32,
-                                  height: 32,
-                                  borderRadius: "50%",
-                                  objectFit: "cover",
-                                }}
-                              />
-                              <span style={{ fontWeight: 600 }}>{p.name}</span>
-                            </div>
-                          </td>
+                          <td style={{ fontWeight: 600 }}>{p.name}</td>
                           <td><code>{p.ic_number}</code></td>
+                          <td>{p.valid_count}</td>
                           <td>
-                            <span style={{ textTransform: "capitalize" }}>
-                              {p.gender || "unknown"}
-                            </span>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {eventsList.length === 0 ? (
+                                <span className="muted">—</span>
+                              ) : (
+                                eventsList.map((ev) => {
+                                  const on = p.event_ids.includes(ev.id);
+                                  return (
+                                    <button
+                                      key={ev.id}
+                                      className={`status-badge ${on ? "valid" : ""}`}
+                                      style={{ cursor: "pointer", border: on ? "none" : "1px solid var(--border)", background: on ? undefined : "transparent", color: on ? undefined : "var(--text-muted)" }}
+                                      onClick={() => handleTogglePromoterEvent(p, ev.id)}
+                                      title={on ? "Assigned — click to remove" : "Not assigned — click to assign"}
+                                    >
+                                      {ev.name}
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}

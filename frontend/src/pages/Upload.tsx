@@ -1,20 +1,20 @@
 /**
- * Upload Page — Snap & upload in one tap.
+ * Upload Page — IC login, then snap & upload in one tap.
  *
- * Returning promoter (name + IC remembered on this phone):
- *   tap "Snap & Upload" → camera → shutter → uploads instantly → result shows.
- * First time: fill name + IC once; from then on it's one tap per customer.
- * Gallery path stays batch: select several, review, then upload.
+ * Flow:
+ *  1. Promoter enters their IC number → login.
+ *     - Registered by admin: name loads, sees only their assigned open events.
+ *     - Not registered: types their name (self-register), sees all open events.
+ *  2. Pick event (remembered) → Snap & Upload → results.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { savePromoterInfo, loadPromoterInfo, clearPromoterInfo } from "../utils/storage";
 import { compressImages } from "../utils/compress";
-import { uploadScreenshots, fetchBatchStatus } from "../utils/api";
+import { uploadScreenshots, fetchBatchStatus, promoterLogin } from "../utils/api";
 import UploadZone from "../components/UploadZone";
-import { EVENTS } from "../constants";
-import type { BatchStatusResponse } from "../types";
+import type { BatchStatusResponse, EventOption } from "../types";
 
 const STATUS_LABEL: Record<string, string> = {
   valid: "Registered",
@@ -24,40 +24,90 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function Upload() {
+  // Identity / login
+  const [ic, setIc] = useState("");
   const [name, setName] = useState("");
-  const [icNumber, setIcNumber] = useState("");
   const [gender, setGender] = useState("female");
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [registered, setRegistered] = useState(false);
+  const [events, setEvents] = useState<EventOption[]>([]);
   const [event, setEvent] = useState("");
-  const [customEvent, setCustomEvent] = useState(false);
-  const [remembered, setRemembered] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
+  // Upload
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const [batchId, setBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatusResponse | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const applyLogin = useCallback(
+    (resp: Awaited<ReturnType<typeof promoterLogin>>, savedEvent?: string) => {
+      setRegistered(resp.registered);
+      if (resp.registered && resp.name) setName(resp.name);
+      if (resp.gender) setGender(resp.gender);
+      setEvents(resp.events);
+      // Restore previously-picked event if it's still available
+      if (savedEvent && resp.events.some((e) => e.name === savedEvent)) {
+        setEvent(savedEvent);
+      } else if (resp.events.length === 1) {
+        setEvent(resp.events[0].name);
+      }
+      setLoggedIn(true);
+    },
+    []
+  );
+
+  // Auto-login from a saved IC on this phone
   useEffect(() => {
     const saved = loadPromoterInfo();
-    if (saved) {
-      setName(saved.name);
-      setIcNumber(saved.ic_number);
-      if (saved.gender) setGender(saved.gender);
-      if (saved.event) {
-        setEvent(saved.event);
-        if (!EVENTS.includes(saved.event)) setCustomEvent(true);
-      }
-      setRemembered(true);
-    }
-  }, []);
+    if (!saved?.ic_number) return;
+    setIc(saved.ic_number);
+    setName(saved.name);
+    if (saved.gender) setGender(saved.gender);
+    promoterLogin(saved.ic_number)
+      .then((resp) => applyLogin(resp, saved.event))
+      .catch(() => {
+        /* stay on login step if it fails */
+      });
+  }, [applyLogin]);
 
   useEffect(() => {
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
     };
   }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ic.trim()) {
+      setLoginError("Enter your IC number.");
+      return;
+    }
+    setLoginError(null);
+    setLoggingIn(true);
+    try {
+      const resp = await promoterLogin(ic.trim());
+      applyLogin(resp);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : "Login failed.");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleLogout = () => {
+    clearPromoterInfo();
+    setIc("");
+    setName("");
+    setGender("female");
+    setEvent("");
+    setEvents([]);
+    setRegistered(false);
+    setLoggedIn(false);
+  };
 
   const startPolling = useCallback((id: string) => {
     if (pollingRef.current) clearInterval(pollingRef.current);
@@ -77,16 +127,14 @@ export default function Upload() {
     pollingRef.current = setInterval(poll, 1500);
   }, []);
 
-  // Core upload — takes files directly so camera capture can fire it
-  // immediately without waiting on a state update.
   const doUpload = useCallback(
-    async (toUpload: File[], curName: string, curIc: string, curGender: string, curEvent: string) => {
-      if (!curEvent.trim()) {
+    async (toUpload: File[]) => {
+      if (!event.trim()) {
         setError("Pick your event/location first.");
         return;
       }
-      if (!curName.trim() || !curIc.trim()) {
-        setError("Enter your name and IC once — then snapping uploads instantly.");
+      if (!name.trim()) {
+        setError("Enter your name first.");
         return;
       }
       if (toUpload.length === 0) return;
@@ -95,20 +143,13 @@ export default function Upload() {
       setUploading(true);
       try {
         savePromoterInfo({
-          name: curName.trim(),
-          ic_number: curIc.trim(),
-          gender: curGender,
-          event: curEvent.trim(),
+          name: name.trim(),
+          ic_number: ic.trim(),
+          gender,
+          event: event.trim(),
         });
-        setRemembered(true);
         const compressed = await compressImages(toUpload);
-        const response = await uploadScreenshots(
-          curName.trim(),
-          curIc.trim(),
-          curGender,
-          compressed,
-          curEvent.trim()
-        );
+        const response = await uploadScreenshots(name.trim(), ic.trim(), gender, compressed, event.trim());
         setFiles([]);
         setBatchId(response.batch_id);
         startPolling(response.batch_id);
@@ -118,41 +159,20 @@ export default function Upload() {
         setUploading(false);
       }
     },
-    [startPolling]
+    [event, name, ic, gender, startPolling]
   );
 
-  // Camera: capture → upload straight away (holds the photo only if name/IC
-  // aren't filled yet, so a first-timer can complete the form and upload).
   const handleCameraCapture = (captured: File[]) => {
-    if (!event.trim() || !name.trim() || !icNumber.trim()) {
+    if (!event.trim() || !name.trim()) {
       setFiles((prev) => [...prev, ...captured]);
-      setError(
-        !event.trim()
-          ? "Pick your event/location first, then snap."
-          : "Enter your name and IC once — then snapping uploads instantly."
-      );
+      setError(!event.trim() ? "Pick your event/location first, then snap." : "Enter your name first.");
       return;
     }
-    doUpload(captured, name, icNumber, gender, event);
+    doUpload(captured);
   };
 
-  // Gallery: add to the tray for review, upload with the button.
-  const handleGallerySelect = (selected: File[]) => {
-    setFiles((prev) => [...prev, ...selected]);
-  };
-
-  const handleRemoveFile = (index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleClearSaved = () => {
-    clearPromoterInfo();
-    setName("");
-    setIcNumber("");
-    setGender("female");
-    setRemembered(false);
-  };
-
+  const handleGallerySelect = (selected: File[]) => setFiles((prev) => [...prev, ...selected]);
+  const handleRemoveFile = (index: number) => setFiles((prev) => prev.filter((_, i) => i !== index));
   const handleReset = () => {
     setBatchId(null);
     setBatchStatus(null);
@@ -160,20 +180,40 @@ export default function Upload() {
     setError(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    doUpload(files, name, icNumber, gender, event);
-  };
-
-  const handleEventChange = (value: string) => {
-    if (value === "__other__") {
-      setCustomEvent(true);
-      setEvent("");
-    } else {
-      setCustomEvent(false);
-      setEvent(value);
-    }
-  };
+  // ── Login step ──
+  if (!loggedIn) {
+    return (
+      <div className="page page-narrow">
+        <div className="section-header">
+          <h1 className="section-title">Sign in</h1>
+          <p className="section-subtitle">Enter your IC number to start.</p>
+        </div>
+        <div className="glass-card">
+          <form onSubmit={handleLogin}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="login-ic">
+                IC Number
+              </label>
+              <input
+                id="login-ic"
+                className="form-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="e.g. 010203101234"
+                value={ic}
+                onChange={(e) => setIc(e.target.value)}
+                autoFocus
+              />
+            </div>
+            {loginError && <div className="error-alert" style={{ marginBottom: 14 }}>{loginError}</div>}
+            <button type="submit" className="btn btn-primary btn-full" disabled={loggingIn}>
+              {loggingIn ? "Checking…" : "Continue"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   // ── Processing / results view ──
   if (batchId && batchStatus) {
@@ -190,9 +230,7 @@ export default function Upload() {
           <h1 className="section-title">{allDone ? "Done" : "Processing"}</h1>
           <p className="section-subtitle">
             {event ? `${event} · ` : ""}
-            {allDone
-              ? `${total} photo${total !== 1 ? "s" : ""} processed.`
-              : `${completed} of ${total}…`}
+            {allDone ? `${total} photo${total !== 1 ? "s" : ""} processed.` : `${completed} of ${total}…`}
           </p>
         </div>
 
@@ -202,26 +240,15 @@ export default function Upload() {
               <div className="progress-bar">
                 <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
               </div>
-              <div className="progress-label">
-                {progressPercent}% ({completed}/{total})
-              </div>
+              <div className="progress-label">{progressPercent}% ({completed}/{total})</div>
             </div>
           )}
 
           {allDone && (
             <div className="processing-summary">
-              <div className="summary-stat valid">
-                <span className="summary-value">{validCount}</span>
-                <span className="summary-label">Registered</span>
-              </div>
-              <div className="summary-stat duplicate">
-                <span className="summary-value">{dupCount}</span>
-                <span className="summary-label">Duplicate</span>
-              </div>
-              <div className="summary-stat failed">
-                <span className="summary-value">{failCount}</span>
-                <span className="summary-label">Failed</span>
-              </div>
+              <div className="summary-stat valid"><span className="summary-value">{validCount}</span><span className="summary-label">Registered</span></div>
+              <div className="summary-stat duplicate"><span className="summary-value">{dupCount}</span><span className="summary-label">Duplicate</span></div>
+              <div className="summary-stat failed"><span className="summary-value">{failCount}</span><span className="summary-label">Failed</span></div>
             </div>
           )}
 
@@ -238,21 +265,15 @@ export default function Upload() {
                     {item.status === "pending" ? "Reading photo…" : item.message}
                   </div>
                 </div>
-                <span className={`status-badge ${item.status}`}>
-                  {STATUS_LABEL[item.status] || item.status}
-                </span>
+                <span className={`status-badge ${item.status}`}>{STATUS_LABEL[item.status] || item.status}</span>
               </div>
             ))}
           </div>
 
           {allDone ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 20 }}>
-              <button className="btn btn-primary btn-full" onClick={handleReset}>
-                Snap Next
-              </button>
-              <Link to="/my-uploads" className="btn btn-secondary btn-full">
-                View My Uploads
-              </Link>
+              <button className="btn btn-primary btn-full" onClick={handleReset}>Snap Next</button>
+              <Link to="/my-uploads" className="btn btn-secondary btn-full">View My Uploads</Link>
             </div>
           ) : (
             <div className="processing-indicator">
@@ -265,8 +286,8 @@ export default function Upload() {
     );
   }
 
-  // ── Upload / capture view ──
-  const infoReady = name.trim() !== "" && icNumber.trim() !== "" && event.trim() !== "";
+  // ── Snap & upload view ──
+  const noEvents = events.length === 0;
 
   return (
     <div className="page page-narrow">
@@ -279,101 +300,51 @@ export default function Upload() {
       </div>
 
       <div className="glass-card">
-        {/* Event picker — always visible so promoters can switch location */}
-        <div className="form-group">
-          <label className="form-label" htmlFor="event-select">
-            Event / Location
-          </label>
-          <select
-            id="event-select"
-            className="form-input"
-            value={customEvent ? "__other__" : event}
-            onChange={(e) => handleEventChange(e.target.value)}
-          >
-            <option value="">Select event…</option>
-            {EVENTS.map((ev) => (
-              <option key={ev} value={ev}>
-                {ev}
-              </option>
-            ))}
-            <option value="__other__">Other…</option>
-          </select>
-          {customEvent && (
-            <input
-              className="form-input"
-              style={{ marginTop: 8 }}
-              type="text"
-              placeholder="Type event / location"
-              value={event}
-              onChange={(e) => setEvent(e.target.value)}
-              maxLength={100}
-            />
-          )}
+        <div className="remember-banner">
+          <span>
+            {registered ? "Signed in as " : "Uploading as "}
+            <strong>{name || "you"}</strong>
+          </span>
+          <button type="button" className="remember-banner-clear" onClick={handleLogout}>
+            Not you?
+          </button>
         </div>
 
-        {remembered ? (
-          <div className="remember-banner">
-            <span>
-              Welcome back, <strong>{name}</strong>
-            </span>
-            <button type="button" className="remember-banner-clear" onClick={handleClearSaved}>
-              Not you?
-            </button>
+        {/* Self-register promoters supply their name */}
+        {!registered && (
+          <div className="form-group">
+            <label className="form-label" htmlFor="promoter-name">Your Name</label>
+            <input
+              id="promoter-name"
+              className="form-input"
+              type="text"
+              placeholder="Full name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={100}
+            />
           </div>
-        ) : (
-          <form onSubmit={(e) => e.preventDefault()}>
-            <div className="form-group">
-              <label className="form-label" htmlFor="promoter-name">
-                Your Name
-              </label>
-              <input
-                id="promoter-name"
-                className="form-input"
-                type="text"
-                placeholder="Full name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={100}
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" htmlFor="ic-number">
-                IC Number
-              </label>
-              <input
-                id="ic-number"
-                className="form-input"
-                type="text"
-                placeholder="e.g. 010203-10-1234"
-                value={icNumber}
-                onChange={(e) => setIcNumber(e.target.value)}
-                maxLength={50}
-              />
-              <p className="form-hint">Entered once. Used only to identify you — never shown publicly.</p>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Gender</label>
-              <div className="gender-toggle-group">
-                <button
-                  type="button"
-                  className={`gender-btn ${gender === "male" ? "active" : ""}`}
-                  onClick={() => setGender("male")}
-                >
-                  Male
-                </button>
-                <button
-                  type="button"
-                  className={`gender-btn ${gender === "female" ? "active" : ""}`}
-                  onClick={() => setGender("female")}
-                >
-                  Female
-                </button>
-              </div>
-            </div>
-          </form>
         )}
+
+        {/* Event picker (from the events assigned/open to this promoter) */}
+        <div className="form-group">
+          <label className="form-label" htmlFor="event-select">Event / Location</label>
+          {noEvents ? (
+            <div className="upload-zone-warning">No events are open right now — ask your admin to open one.</div>
+          ) : (
+            <select
+              id="event-select"
+              className="form-input"
+              value={event}
+              onChange={(e) => setEvent(e.target.value)}
+            >
+              <option value="">Select event…</option>
+              {events.map((ev) => (
+                <option key={ev.id} value={ev.name}>{ev.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
 
         <UploadZone
           files={files}
@@ -384,20 +355,15 @@ export default function Upload() {
           busy={uploading}
         />
 
-        {error && (
-          <div className="error-alert" style={{ marginTop: 14 }}>
-            {error}
-          </div>
-        )}
+        {error && <div className="error-alert" style={{ marginTop: 14 }}>{error}</div>}
 
-        {/* Manual upload button — only for gallery batches waiting in the tray */}
         {files.length > 0 && (
           <button
             type="button"
             className="btn btn-primary btn-full"
             style={{ marginTop: 14 }}
-            onClick={handleSubmit}
-            disabled={uploading || !infoReady}
+            onClick={() => doUpload(files)}
+            disabled={uploading || !event.trim() || !name.trim()}
           >
             {uploading ? "Uploading…" : `Upload ${files.length} Photo${files.length !== 1 ? "s" : ""}`}
           </button>
