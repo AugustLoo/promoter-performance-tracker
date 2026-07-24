@@ -39,10 +39,18 @@ export default function UploadZone({
 
   const remaining = maxFiles - files.length;
 
+  // Accept images by MIME type OR extension — HEIC (iPhone) often has an
+  // empty MIME on some browsers, so fall back to the file extension.
+  const isImageFile = (f: File) => {
+    if (f.type.startsWith("image/")) return true;
+    const ext = f.name.toLowerCase().split(".").pop();
+    return ["jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "tiff"].includes(ext || "");
+  };
+
   const filterImages = useCallback(
     (fileList: FileList | null): File[] => {
       if (!fileList) return [];
-      const images = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+      const images = Array.from(fileList).filter(isImageFile);
       if (files.length + images.length > maxFiles) {
         const allowed = images.slice(0, Math.max(0, remaining));
         setLimitWarning(
@@ -58,7 +66,7 @@ export default function UploadZone({
   );
 
   const handleCamera = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const captured = Array.from(e.target.files || []).filter((f) => f.type.startsWith("image/"));
+    const captured = Array.from(e.target.files || []).filter(isImageFile);
     e.target.value = "";
     if (captured.length > 0) onCameraCapture(captured);
   };
