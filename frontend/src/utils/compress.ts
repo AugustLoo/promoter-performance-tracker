@@ -4,7 +4,7 @@
  * Supports auto-converting iPhone HEIC/HEIF images to JPEG.
  */
 
-import heic2any from "heic2any";
+import { heicTo } from "heic-to";
 
 /** Maximum width/height for compressed images (pixels) */
 const MAX_DIMENSION = 640;
@@ -19,17 +19,16 @@ function isHEIC(file: File): boolean {
     file.name.toLowerCase().endsWith(".heic") || file.name.toLowerCase().endsWith(".heif");
 }
 
-/** Convert HEIC File to JPEG File in the browser using heic2any */
+/** Convert HEIC File to JPEG File in the browser using heic-to */
 async function convertHeicToJpeg(file: File): Promise<File> {
   try {
-    console.log(`[HEIC] Converting ${file.name} to JPEG...`);
-    const result = await heic2any({
+    console.log(`[HEIC] Converting ${file.name} to JPEG using heic-to...`);
+    const blob = await heicTo({
       blob: file,
-      toType: "image/jpeg",
+      type: "image/jpeg",
       quality: 0.90,
     });
     
-    const blob = Array.isArray(result) ? result[0] : result;
     const newName = file.name.replace(/\.[^.]+$/, ".jpg");
     
     return new File([blob], newName, {
