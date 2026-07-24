@@ -10,8 +10,15 @@ const QUALITY = 0.85;
 /** Maximum file size after compression (bytes) — 100KB */
 const MAX_SIZE_BYTES = 100 * 1024;
 
+/** Check if a file is HEIC/HEIF format (iPhone photos) */
+function isHEIC(file: File): boolean {
+  return file.type === "image/heic" || file.type === "image/heif" ||
+    file.name.toLowerCase().endsWith(".heic") || file.name.toLowerCase().endsWith(".heif");
+}
+
 /**
  * Compress an image file using canvas.
+ * HEIC files are always converted to JPEG (OpenCV can't read HEIC).
  *
  * Strategy:
  *   1. Load the image into an HTMLImageElement.
@@ -20,8 +27,8 @@ const MAX_SIZE_BYTES = 100 * 1024;
  *   4. Return the compressed file.
  */
 export async function compressImage(file: File): Promise<File> {
-  // Skip if already small enough
-  if (file.size <= MAX_SIZE_BYTES) {
+  // Skip if already small enough AND not HEIC (HEIC must be converted to JPEG)
+  if (file.size <= MAX_SIZE_BYTES && !isHEIC(file)) {
     return file;
   }
 
