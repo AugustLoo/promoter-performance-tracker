@@ -1,10 +1,6 @@
 /**
- * Navbar — Fixed top navigation bar.
- *
- * Designed to match BaitoTrack friendly brand:
- *  - Left side: ⭐ BaitoTrack branding
- *  - Middle: Navigation links (Home, Upload)
- *  - Right side: Admin Login button
+ * Navbar — Fixed top navigation with Baito branding.
+ * Links: Upload (primary task), My Uploads (history), Leaderboard.
  */
 
 import { NavLink } from "react-router-dom";
@@ -13,40 +9,36 @@ export default function Navbar() {
   return (
     <nav className="navbar">
       <div className="navbar-content">
-        {/* Brand Logo */}
-        <NavLink to="/" className="navbar-brand" style={{ textDecoration: "none" }}>
-          <img src="/baito.jpg" alt="BaitoTrack Logo" className="navbar-brand-logo" />
-          <span className="navbar-brand-text">BaitoTrack</span>
+        <NavLink to="/" className="navbar-brand">
+          <div className="navbar-brand-mark" />
+          <span>BaitoTrack</span>
         </NavLink>
 
-        {/* Navigation Links */}
         <div className="navbar-links">
+          <NavLink
+            to="/upload"
+            className={({ isActive }) => `navbar-link ${isActive ? "active" : ""}`}
+          >
+            Upload
+          </NavLink>
+
+          <NavLink
+            to="/my-uploads"
+            className={({ isActive }) => `navbar-link ${isActive ? "active" : ""}`}
+          >
+            My Uploads
+          </NavLink>
+
           <NavLink
             to="/"
             end
-            className={({ isActive }) =>
-              `navbar-link ${isActive ? "active" : ""}`
-            }
+            className={({ isActive }) => `navbar-link ${isActive ? "active" : ""}`}
           >
-            <span>Home</span>
+            Leaderboard
           </NavLink>
 
-          <NavLink
-            to="/upload"
-            className={({ isActive }) =>
-              `navbar-link ${isActive ? "active" : ""}`
-            }
-          >
-            <span>Upload</span>
-          </NavLink>
-
-          {/* Admin Login button on the far right */}
-          <NavLink
-            to="/admin"
-            className="navbar-admin-btn"
-            style={{ marginLeft: 16 }}
-          >
-            🔒 <span>Admin Login</span>
+          <NavLink to="/admin" className="navbar-admin-btn" style={{ marginLeft: 8 }}>
+            Admin
           </NavLink>
         </div>
       </div>

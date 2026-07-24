@@ -20,8 +20,18 @@ from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from database import get_db, Promoter, Submission
-from models import BatchUploadResponse, BatchStatusResponse, SubmissionResult
+from database import get_db, Promoter, Submission, Event
+from models import (
+    BatchUploadResponse,
+    BatchStatusResponse,
+    SubmissionResult,
+    MySubmissionItem,
+    MySubmissionsRequest,
+    MySubmissionsResponse,
+    PromoterLoginRequest,
+    PromoterLoginResponse,
+    EventOption,
+)
 from worker import enqueue_ocr_task
 from utils import get_storage_path, generate_filename
 from config import MAX_FILE_SIZE_MB, MAX_FILES_PER_UPLOAD, UPLOAD_DIR
@@ -56,6 +66,7 @@ async def upload_screenshots(
     promoter_name: str = Form(..., min_length=1, max_length=100),
     ic_number: str = Form(..., min_length=1, max_length=50),
     gender: str = Form(None),
+    event: str = Form(None, max_length=100),
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
@@ -78,6 +89,9 @@ async def upload_screenshots(
     selected_gender = "female"
     if gender and gender.strip().lower() == "male":
         selected_gender = "male"
+
+    # Event/activation tag (optional, free text — e.g. "MyTown Concourse")
+    event_tag = event.strip() if event and event.strip() else None
 
     # ── Upsert promoter (find by IC number or create) ──
     promoter = (
@@ -125,6 +139,7 @@ async def upload_screenshots(
                 promoter_id=promoter.id,
                 batch_id=batch_id,
                 extracted_username=None,
+                event=event_tag,
                 image_path="__skipped__",
                 status="ocr_failed",
                 ocr_raw_text=f"File too large ({file_size_mb:.1f}MB). Max is {MAX_FILE_SIZE_MB}MB.",
@@ -174,6 +189,7 @@ async def upload_screenshots(
             promoter_id=promoter.id,
             batch_id=batch_id,
             extracted_username=None,
+            event=event_tag,
             image_path=relative_path,
             status="pending",
         )
@@ -221,7 +237,10 @@ async def get_batch_status(
         if sub.status == "pending":
             message = "Processing..."
         elif sub.status == "valid":
-            message = f"Success! Username '{sub.extracted_username}' registered."
+            if sub.member_id:
+                message = f"Success! '{sub.extracted_username}' (Member ID: {sub.member_id}) registered."
+            else:
+                message = f"Success! Username '{sub.extracted_username}' registered."
         elif sub.status == "duplicate":
             if sub.matched_name:
                 message = f"Duplicate! '{sub.extracted_username}' matched '{sub.matched_name}' ({sub.similarity:.1f}%)."
@@ -236,6 +255,8 @@ async def get_batch_status(
             filename=Path(sub.image_path).name if sub.image_path != "__skipped__" else "skipped",
             status=sub.status,
             extracted_username=sub.extracted_username,
+            full_name=sub.full_name,
+            member_id=sub.member_id,
             message=message,
         ))
 
@@ -248,4 +269,143 @@ async def get_batch_status(
         completed=completed,
         pending=pending,
         results=results,
+    )
+
+
+# In-memory rate limiter for history lookups — deters IC-number enumeration.
+#
+# Keyed only on values a caller CANNOT forge to buy more throughput:
+#   • a global cap  — bounds the total enumeration rate regardless of source
+#   • a per-IC cap  — bounds hammering any single person's history
+# Client IP is deliberately NOT used: the backend is reachable directly via
+# the tunnel, where X-Forwarded-For / X-Nf-Client-Connection-Ip can be spoofed
+# per request, so an IP-keyed limiter is trivially bypassed.
+_global_hits: list = []
+_per_ic_hits: dict = {}
+_GLOBAL_LIMIT = 120     # total lookups per window (all callers combined)
+_PER_IC_LIMIT = 10      # lookups per window for any single IC number
+_LOOKUP_WINDOW = 60.0   # seconds
+
+
+def _lookup_rate_limited(ic_key: str) -> bool:
+    """Return True if this lookup should be rejected. Runs in the event loop
+    (no await between check and record), so the section is effectively atomic."""
+    global _global_hits
+    now = time.time()
+
+    _global_hits = [t for t in _global_hits if now - t < _LOOKUP_WINDOW]
+    ic_hits = [t for t in _per_ic_hits.get(ic_key, []) if now - t < _LOOKUP_WINDOW]
+
+    if len(_global_hits) >= _GLOBAL_LIMIT or len(ic_hits) >= _PER_IC_LIMIT:
+        return True
+
+    _global_hits.append(now)
+    ic_hits.append(now)
+    _per_ic_hits[ic_key] = ic_hits
+
+    # Bound memory: drop IC buckets that have fully aged out
+    if len(_per_ic_hits) > 5000:
+        stale = [k for k, v in _per_ic_hits.items() if not any(now - t < _LOOKUP_WINDOW for t in v)]
+        for k in stale:
+            _per_ic_hits.pop(k, None)
+
+    return False
+
+
+@router.get("/events/open", response_model=List[EventOption])
+async def open_events(db: Session = Depends(get_db)):
+    """Public: list currently-open events (for the phone picker)."""
+    events = db.query(Event).filter(Event.active == True).order_by(Event.name).all()  # noqa: E712
+    return [EventOption(id=e.id, name=e.name) for e in events]
+
+
+@router.post("/promoter/login", response_model=PromoterLoginResponse)
+async def promoter_login(
+    payload: PromoterLoginRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Phone login by IC number.
+      - Registered promoter → returns their name + assigned open events
+        (or all open events if they have no assignments).
+      - Unregistered IC → registered=false + all open events (self-register).
+    """
+    ic = payload.ic_number.strip()
+    if _lookup_rate_limited(ic):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again in a minute.")
+
+    all_open = db.query(Event).filter(Event.active == True).order_by(Event.name).all()  # noqa: E712
+
+    promoter = db.query(Promoter).filter(Promoter.ic_number == ic).first()
+    if not promoter:
+        return PromoterLoginResponse(
+            registered=False,
+            events=[EventOption(id=e.id, name=e.name) for e in all_open],
+        )
+
+    assigned_open = [e for e in promoter.events if e.active]
+    visible = assigned_open if assigned_open else all_open
+    visible.sort(key=lambda e: e.name)
+
+    return PromoterLoginResponse(
+        registered=True,
+        name=promoter.name,
+        gender=promoter.gender,
+        events=[EventOption(id=e.id, name=e.name) for e in visible],
+    )
+
+
+@router.post("/my-submissions", response_model=MySubmissionsResponse)
+async def my_submissions(
+    payload: MySubmissionsRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    A promoter's own submission history, looked up by IC number.
+    Powers the "My Uploads" view in the frontend.
+    POST body keeps the IC out of URLs / access logs; the global + per-IC
+    rate limit deters brute-force enumeration of IC numbers.
+    """
+    ic = payload.ic_number.strip()
+    if _lookup_rate_limited(ic):
+        raise HTTPException(status_code=429, detail="Too many lookups. Please try again in a minute.")
+
+    promoter = (
+        db.query(Promoter)
+        .filter(Promoter.ic_number == ic)
+        .first()
+    )
+    if not promoter:
+        return MySubmissionsResponse(
+            promoter_name=None, total=0, valid=0, duplicate=0, failed=0, submissions=[]
+        )
+
+    subs = (
+        db.query(Submission)
+        .filter(Submission.promoter_id == promoter.id)
+        .order_by(Submission.created_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    items = [
+        MySubmissionItem(
+            id=s.id,
+            status=s.status,
+            full_name=s.full_name or s.extracted_username,
+            member_id=s.member_id,
+            event=s.event,
+            image_url=None if s.image_path == "__skipped__" else f"/uploads/{s.image_path}",
+            created_at=s.created_at.isoformat() if s.created_at else "",
+        )
+        for s in subs
+    ]
+
+    return MySubmissionsResponse(
+        promoter_name=promoter.name,
+        total=len(items),
+        valid=sum(1 for i in items if i.status == "valid"),
+        duplicate=sum(1 for i in items if i.status == "duplicate"),
+        failed=sum(1 for i in items if i.status == "ocr_failed"),
+        submissions=items,
     )

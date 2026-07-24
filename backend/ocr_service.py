@@ -41,7 +41,8 @@ PENALIZED_WORDS = {
     "history", "points", "rewards", "vouchers", "voucher", "account", "details",
     "member", "status", "level", "loyalty", "successful", "success", "fail", 
     "failed", "register", "registration", "welcome", "signups", "signup", "promoter",
-    "bites", "purveyor", "food", "notification"
+    "bites", "purveyor", "food", "notification", "copy", "copied", "membership",
+    "events", "event"
 }
 
 def preprocess_image(image_path: str) -> Tuple[np.ndarray, float]:
@@ -243,14 +244,20 @@ def evaluate_candidates(ocr_lines: List[Dict[str, Any]], qr_info: Optional[Dict[
             
         score = 0
         text_lower = clean_text.lower()
-        
+
+        # Lines that are exactly a UI/button/label word (e.g. "Copy", "Membership")
+        # or any "Membership No."-style label can never be the name — skip them
+        # outright so adjacency bonuses can't rescue them
+        if text_lower in PENALIZED_WORDS or "membership" in text_lower:
+            continue
+
         # Check context patterns by scanning surrounding lines
         # Check preceding line (if any)
         if i > 0:
             prev_text = ocr_lines[i-1]["text"].lower()
             if any(kw in prev_text for kw in ["welcome", "selamat datang", "welcome back", "welcome,"]):
                 score += 30
-            elif any(kw in prev_text for kw in ["name", "username", "nickname", "姓名", "nama", "user"]):
+            elif any(kw in prev_text for kw in ["name", "username", "nickname", "姓名", "nama", "user", "membership"]):
                 score += 20
                 
         # Check if the current line has a prefix (e.g. "Name: LOO CHUN QIAN" or "Welcome, Jessica")
@@ -267,16 +274,25 @@ def evaluate_candidates(ocr_lines: List[Dict[str, Any]], qr_info: Optional[Dict[
             continue
 
         # Check succeeding lines for member metadata/ID markers (Bonus points)
-        # Name is usually followed by Member ID or Member Since or points
-        for offset in [1, 2]:
-            if i + offset < len(ocr_lines):
-                next_text = ocr_lines[i+offset]["text"].lower()
-                if any(kw in next_text for kw in ["member since", "since", "member id", "points", "loyalty"]):
-                    score += 25
-                    break
-                elif next_text.strip().isdigit() and len(next_text.strip()) >= 5:
-                    score += 20
-                    break
+        # Name is usually followed by Member ID or Member Since or points.
+        # Only name-like lines free of UI words earn this bonus — otherwise
+        # labels/buttons/menus sitting above the member number or near metadata
+        # keywords (e.g. "Copy", "My Transaction History") hijack it.
+        tokens = set(re.findall(r"[a-z]+", text_lower))
+        is_name_like = bool(
+            re.match(r"^[\u4e00-\u9fa5]{2,5}$", clean_text)
+            or re.match(r"^[A-Za-z]+(?:\s+[A-Za-z]+){0,5}$", clean_text)
+        ) and not tokens.intersection(PENALIZED_WORDS)
+        if is_name_like:
+            for offset in [1, 2]:
+                if i + offset < len(ocr_lines):
+                    next_text = ocr_lines[i+offset]["text"].lower()
+                    if any(kw in next_text for kw in ["member since", "since", "member id", "points", "loyalty"]):
+                        score += 25
+                        break
+                    elif next_text.strip().isdigit() and len(next_text.strip()) >= 5:
+                        score += 20
+                        break
 
         # Language Format Scoring
         # 1. Chinese Name (2~5 characters)
@@ -324,7 +340,6 @@ def evaluate_candidates(ocr_lines: List[Dict[str, Any]], qr_info: Optional[Dict[
         if any(kw in text_lower for kw in [".com", ".net", ".org", "http", "www", "/"]):
             score -= 20
         # 3. Penalized layout / menu keywords (word token intersection check)
-        tokens = set(re.findall(r"[a-z]+", text_lower))
         if tokens.intersection(PENALIZED_WORDS):
             score -= 20
         # 4. All uppercase random/garbage characters
@@ -340,6 +355,29 @@ def evaluate_candidates(ocr_lines: List[Dict[str, Any]], qr_info: Optional[Dict[
     candidates.sort(key=lambda x: x[1], reverse=True)
     best_candidate, best_score = candidates[0]
     return best_candidate, best_score
+
+def extract_member_id(ocr_lines: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Find the member/membership ID: a digit-only line (5-12 digits after
+    stripping spaces/dashes), preferring one adjacent to a 'member' label.
+    """
+    candidates = []
+    for i, line in enumerate(ocr_lines):
+        digits = re.sub(r"[\s\-]", "", line["text"].strip())
+        if digits.isdigit() and 5 <= len(digits) <= 12:
+            score = 0
+            for offset in (-2, -1, 1):
+                j = i + offset
+                if 0 <= j < len(ocr_lines) and "member" in ocr_lines[j]["text"].lower():
+                    score += 10
+                    break
+            candidates.append((digits, score))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[1], reverse=True)
+    return candidates[0][0]
+
 
 def process_image(image_path: str) -> Dict[str, Any]:
     """
@@ -398,6 +436,7 @@ def process_image(image_path: str) -> Dict[str, Any]:
     # ── Phase 3: Rule Engine ──
     rule_start = time.time()
     extracted_name, candidate_score = evaluate_candidates(ocr_lines, qr_info=qr_info)
+    member_id = extract_member_id(ocr_lines)
     rule_time = time.time() - rule_start
     
     llm_used = False
@@ -431,6 +470,7 @@ def process_image(image_path: str) -> Dict[str, Any]:
     
     return {
         "extracted_username": extracted_name,
+        "member_id": member_id,
         "ocr_raw_text": raw_text,
         "ocr_time": prep_time + ocr_time, # Combine prep + ocr engine execution times
         "rule_time": rule_time,

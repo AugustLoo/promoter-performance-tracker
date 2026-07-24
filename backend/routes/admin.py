@@ -11,22 +11,32 @@ Note: This is a simple auth scheme suitable for internal tools.
 For production, consider JWT tokens or OAuth.
 """
 
+import io
 import secrets
 import time
-from typing import Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from database import get_db, Promoter, Submission, ValidUsername
+from database import get_db, Promoter, Submission, ValidUsername, Event
 from worker import remove_from_cache
+from routes.upload import get_random_avatar
 from models import (
     AdminLoginRequest,
     AdminLoginResponse,
     AdminStatsResponse,
     AdminSubmission,
     BatchDeleteRequest,
+    EventItem,
+    EventCreate,
+    EventUpdate,
+    AdminPromoterItem,
+    PromoterCreate,
+    PromoterUpdate,
 )
 from config import ADMIN_PIN, ADMIN_TOKEN_EXPIRY
 
@@ -93,10 +103,16 @@ async def admin_login(request: AdminLoginRequest):
     )
 
 
+# SQLite expression for the MYT calendar day of a submission (UTC + 8h)
+_MYT_DAY = func.strftime("%Y-%m-%d", func.datetime(Submission.created_at, "+8 hours"))
+
+
 @router.get("/admin/stats", response_model=AdminStatsResponse)
 async def get_admin_stats(
     status_filter: Optional[str] = None,
     promoter_filter: Optional[str] = None,
+    event_filter: Optional[str] = None,
+    day_filter: Optional[str] = None,
     db: Session = Depends(get_db),
     _: bool = Depends(verify_admin_token),
 ):
@@ -106,47 +122,38 @@ async def get_admin_stats(
     Query params:
       - status_filter: Filter by submission status (valid|duplicate|ocr_failed)
       - promoter_filter: Search by promoter name (partial match)
+      - event_filter: Filter by event/activation (exact match)
+      - day_filter: Filter by MYT calendar day ("YYYY-MM-DD")
     """
-    # ── Aggregate counts ──
-    total_promoters = db.query(func.count(Promoter.id)).scalar() or 0
-    total_submissions = db.query(func.count(Submission.id)).scalar() or 0
-    total_valid = (
-        db.query(func.count(Submission.id))
-        .filter(Submission.status == "valid")
-        .scalar()
-        or 0
-    )
-    total_duplicate = (
-        db.query(func.count(Submission.id))
-        .filter(Submission.status == "duplicate")
-        .scalar()
-        or 0
-    )
-    total_ocr_failed = (
-        db.query(func.count(Submission.id))
-        .filter(Submission.status == "ocr_failed")
-        .scalar()
-        or 0
-    )
+    # Event + day narrow the whole scope (counts AND list); status/promoter
+    # further narrow only the list so the stat cards show per-status totals
+    # within the selected event/day.
+    def scoped(q):
+        if event_filter:
+            q = q.filter(Submission.event == event_filter)
+        if day_filter:
+            q = q.filter(_MYT_DAY == day_filter)
+        return q
 
-    # ── Build filtered submission query ──
-    query = (
+    total_promoters = db.query(func.count(Promoter.id)).scalar() or 0
+    total_submissions = scoped(db.query(func.count(Submission.id))).scalar() or 0
+    total_valid = scoped(db.query(func.count(Submission.id)).filter(Submission.status == "valid")).scalar() or 0
+    total_duplicate = scoped(db.query(func.count(Submission.id)).filter(Submission.status == "duplicate")).scalar() or 0
+    total_ocr_failed = scoped(db.query(func.count(Submission.id)).filter(Submission.status == "ocr_failed")).scalar() or 0
+
+    # ── Build filtered submission list ──
+    query = scoped(
         db.query(Submission, Promoter)
         .join(Promoter, Promoter.id == Submission.promoter_id)
-        .order_by(Submission.created_at.desc())
-    )
+    ).order_by(Submission.created_at.desc())
 
-    # Apply optional filters
     if status_filter and status_filter in ("valid", "duplicate", "ocr_failed"):
         query = query.filter(Submission.status == status_filter)
-
     if promoter_filter:
         query = query.filter(Promoter.name.ilike(f"%{promoter_filter}%"))
 
-    # Limit to 200 most recent for performance
     submissions_data = query.limit(200).all()
 
-    # ── Build response ──
     submissions = []
     for sub, promoter in submissions_data:
         submissions.append(
@@ -155,6 +162,9 @@ async def get_admin_stats(
                 promoter_name=promoter.name,
                 ic_number=promoter.ic_number,
                 extracted_username=sub.extracted_username,
+                full_name=sub.full_name,
+                member_id=sub.member_id,
+                event=sub.event,
                 status=sub.status,
                 image_path=sub.image_path,
                 created_at=sub.created_at.isoformat() if sub.created_at else "",
@@ -170,6 +180,12 @@ async def get_admin_stats(
             )
         )
 
+    # Distinct events/days across the FULL dataset (so filters stay switchable)
+    events = [r[0] for r in db.query(Submission.event).filter(Submission.event.isnot(None)).distinct().all() if r[0]]
+    days = [r[0] for r in db.query(_MYT_DAY).distinct().all() if r[0]]
+    events.sort()
+    days.sort(reverse=True)
+
     return AdminStatsResponse(
         total_promoters=total_promoters,
         total_submissions=total_submissions,
@@ -177,6 +193,165 @@ async def get_admin_stats(
         total_duplicate=total_duplicate,
         total_ocr_failed=total_ocr_failed,
         submissions=submissions,
+        events=events,
+        days=days,
+    )
+
+
+def _safe(value):
+    """Neutralize spreadsheet formula injection. A value beginning with a
+    formula trigger (= + - @) or a control char could execute when the file is
+    opened (or, via openpyxl, be written as a real formula). Prefix a quote so
+    it renders strictly as text. Legitimate names/IDs never start with these."""
+    if isinstance(value, str) and value and value[0] in ("=", "+", "-", "@", "\t", "\r", "\n"):
+        return "'" + value
+    return value
+
+
+def _fmt_myt(dt) -> str:
+    """Format a stored (UTC) datetime as Malaysia local time for the report."""
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    myt = dt.astimezone(timezone(timedelta(hours=8)))
+    return myt.strftime("%Y-%m-%d %H:%M")
+
+
+@router.get("/admin/export")
+async def export_excel(
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    """
+    One-click Excel export of all campaign data.
+    Three sheets: Signups (valid only), All Submissions, Promoters.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="0066CC")
+
+    def style_header(ws, ncols):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="left")
+        ws.freeze_panes = "A2"
+
+    def autosize(ws):
+        for col in ws.columns:
+            width = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max(width + 2, 10), 45)
+
+    # Pull all submissions joined with promoter, newest first
+    rows = (
+        db.query(Submission, Promoter)
+        .join(Promoter, Promoter.id == Submission.promoter_id)
+        .order_by(Submission.created_at.desc())
+        .all()
+    )
+
+    def myt_day(dt) -> str:
+        if not dt:
+            return ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+
+    # ── Sheet 1: Summary — valid signups by Event × Day (payout view) ──
+    ws0 = wb.active
+    ws0.title = "Summary"
+    ws0.append(["Event", "Day (MYT)", "Valid Signups", "Total Uploads"])
+    agg: dict = {}
+    for sub, _p in rows:
+        key = (sub.event or "(no event)", myt_day(sub.created_at))
+        cell = agg.setdefault(key, {"valid": 0, "total": 0})
+        cell["total"] += 1
+        if sub.status == "valid":
+            cell["valid"] += 1
+    for (ev, day) in sorted(agg.keys()):
+        ws0.append([_safe(ev), day, agg[(ev, day)]["valid"], agg[(ev, day)]["total"]])
+    style_header(ws0, 4)
+    autosize(ws0)
+
+    # ── Sheet 2: Signups (valid only) — the payout-relevant rows ──
+    ws1 = wb.create_sheet("Signups")
+    ws1.append(["No.", "Event", "Day (MYT)", "Promoter", "Full Name", "Member ID", "Time (MYT)"])
+    n = 0
+    for sub, promoter in rows:
+        if sub.status != "valid":
+            continue
+        n += 1
+        ws1.append([
+            n,
+            _safe(sub.event or ""),
+            myt_day(sub.created_at),
+            _safe(promoter.name),
+            _safe(sub.full_name or sub.extracted_username or ""),
+            _safe(sub.member_id or ""),
+            _fmt_myt(sub.created_at),
+        ])
+    style_header(ws1, 7)
+    autosize(ws1)
+
+    # ── Sheet 3: All Submissions ──
+    ws2 = wb.create_sheet("All Submissions")
+    ws2.append([
+        "ID", "Event", "Day (MYT)", "Promoter", "IC Number", "Full Name", "Member ID",
+        "Status", "Matched With", "Similarity %", "OCR Confidence", "Date/Time (MYT)",
+    ])
+    for sub, promoter in rows:
+        ws2.append([
+            sub.id,
+            _safe(sub.event or ""),
+            myt_day(sub.created_at),
+            _safe(promoter.name),
+            _safe(promoter.ic_number),
+            _safe(sub.full_name or sub.extracted_username or ""),
+            _safe(sub.member_id or ""),
+            sub.status,
+            _safe(sub.matched_name or ""),
+            round(sub.similarity, 1) if sub.similarity is not None else "",
+            round(sub.ocr_confidence, 2) if sub.ocr_confidence is not None else "",
+            _fmt_myt(sub.created_at),
+        ])
+    style_header(ws2, 12)
+    autosize(ws2)
+
+    # ── Sheet 4: Promoters (with valid signup counts) ──
+    ws3 = wb.create_sheet("Promoters")
+    ws3.append(["Promoter", "IC Number", "Gender", "Valid Signups", "Joined (MYT)"])
+    counts = dict(
+        db.query(ValidUsername.promoter_id, func.count(ValidUsername.id))
+        .group_by(ValidUsername.promoter_id)
+        .all()
+    )
+    promoters = db.query(Promoter).order_by(Promoter.name).all()
+    for p in promoters:
+        ws3.append([
+            _safe(p.name),
+            _safe(p.ic_number),
+            _safe(p.gender or ""),
+            counts.get(p.id, 0),
+            _fmt_myt(p.created_at),
+        ])
+    style_header(ws3, 5)
+    autosize(ws3)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M")
+    filename = f"promoter-data-{stamp}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -286,24 +461,164 @@ async def delete_submissions_batch(
     }
 
 
-@router.get("/admin/promoters")
+@router.get("/admin/promoters", response_model=List[AdminPromoterItem])
 async def get_admin_promoters(
     db: Session = Depends(get_db),
     _: bool = Depends(verify_admin_token),
 ):
-    """
-    Retrieve all promoters, including their name, IC number, and gender.
-    """
+    """Retrieve all promoters with their valid-signup count and assigned events."""
     promoters = db.query(Promoter).order_by(Promoter.name.asc()).all()
+    counts = dict(
+        db.query(ValidUsername.promoter_id, func.count(ValidUsername.id))
+        .group_by(ValidUsername.promoter_id)
+        .all()
+    )
     return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "ic_number": p.ic_number,
-            "gender": p.gender or "unknown",
-            "avatar": p.avatar,
-            "created_at": p.created_at.isoformat() if p.created_at else "",
-        }
+        AdminPromoterItem(
+            id=p.id,
+            name=p.name,
+            ic_number=p.ic_number,
+            gender=p.gender or "unknown",
+            avatar=p.avatar,
+            created_at=p.created_at.isoformat() if p.created_at else "",
+            valid_count=counts.get(p.id, 0),
+            event_ids=[e.id for e in p.events],
+        )
         for p in promoters
     ]
+
+
+# ──────────────────────────────────────────────
+# Events management
+# ──────────────────────────────────────────────
+
+@router.get("/admin/events", response_model=List[EventItem])
+async def list_events(
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    """All events with per-event valid + total upload counts."""
+    events = db.query(Event).order_by(Event.name.asc()).all()
+    valid_counts = dict(
+        db.query(Submission.event, func.count(Submission.id))
+        .filter(Submission.status == "valid")
+        .group_by(Submission.event)
+        .all()
+    )
+    total_counts = dict(
+        db.query(Submission.event, func.count(Submission.id))
+        .group_by(Submission.event)
+        .all()
+    )
+    return [
+        EventItem(
+            id=e.id,
+            name=e.name,
+            active=bool(e.active),
+            valid_count=valid_counts.get(e.name, 0),
+            total_uploads=total_counts.get(e.name, 0),
+        )
+        for e in events
+    ]
+
+
+@router.post("/admin/events", response_model=EventItem)
+async def create_event(
+    payload: EventCreate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    name = payload.name.strip()
+    existing = db.query(Event).filter(Event.name == name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An event with that name already exists.")
+    event = Event(name=name, active=True)
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return EventItem(id=event.id, name=event.name, active=True, valid_count=0, total_uploads=0)
+
+
+@router.patch("/admin/events/{event_id}", response_model=EventItem)
+async def update_event(
+    event_id: int,
+    payload: EventUpdate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found.")
+    if payload.name is not None:
+        event.name = payload.name.strip()
+    if payload.active is not None:
+        event.active = payload.active
+    db.commit()
+    db.refresh(event)
+    valid = db.query(func.count(Submission.id)).filter(
+        Submission.event == event.name, Submission.status == "valid"
+    ).scalar() or 0
+    total = db.query(func.count(Submission.id)).filter(Submission.event == event.name).scalar() or 0
+    return EventItem(id=event.id, name=event.name, active=bool(event.active), valid_count=valid, total_uploads=total)
+
+
+# ──────────────────────────────────────────────
+# Promoter roster management
+# ──────────────────────────────────────────────
+
+def _assign_events(promoter: Promoter, event_ids: List[int], db: Session):
+    events = db.query(Event).filter(Event.id.in_(event_ids)).all() if event_ids else []
+    promoter.events = events
+
+
+@router.post("/admin/promoters", response_model=AdminPromoterItem)
+async def create_promoter(
+    payload: PromoterCreate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    ic = payload.ic_number.strip()
+    existing = db.query(Promoter).filter(Promoter.ic_number == ic).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="A promoter with that IC already exists.")
+    gender = "male" if (payload.gender or "").strip().lower() == "male" else "female"
+    avatar = get_random_avatar(gender, db)
+    promoter = Promoter(name=payload.name.strip(), ic_number=ic, gender=gender, avatar=avatar)
+    _assign_events(promoter, payload.event_ids, db)
+    db.add(promoter)
+    db.commit()
+    db.refresh(promoter)
+    return AdminPromoterItem(
+        id=promoter.id, name=promoter.name, ic_number=promoter.ic_number,
+        gender=promoter.gender, avatar=promoter.avatar,
+        created_at=promoter.created_at.isoformat() if promoter.created_at else "",
+        valid_count=0, event_ids=[e.id for e in promoter.events],
+    )
+
+
+@router.patch("/admin/promoters/{promoter_id}", response_model=AdminPromoterItem)
+async def update_promoter(
+    promoter_id: int,
+    payload: PromoterUpdate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_admin_token),
+):
+    promoter = db.query(Promoter).filter(Promoter.id == promoter_id).first()
+    if not promoter:
+        raise HTTPException(status_code=404, detail="Promoter not found.")
+    if payload.name is not None:
+        promoter.name = payload.name.strip()
+    if payload.gender is not None:
+        promoter.gender = "male" if payload.gender.strip().lower() == "male" else "female"
+    if payload.event_ids is not None:
+        _assign_events(promoter, payload.event_ids, db)
+    db.commit()
+    db.refresh(promoter)
+    valid = db.query(func.count(ValidUsername.id)).filter(ValidUsername.promoter_id == promoter.id).scalar() or 0
+    return AdminPromoterItem(
+        id=promoter.id, name=promoter.name, ic_number=promoter.ic_number,
+        gender=promoter.gender, avatar=promoter.avatar,
+        created_at=promoter.created_at.isoformat() if promoter.created_at else "",
+        valid_count=valid, event_ids=[e.id for e in promoter.events],
+    )
 

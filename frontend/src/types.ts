@@ -8,7 +8,29 @@ export interface SubmissionResult {
   filename: string;
   status: "valid" | "duplicate" | "ocr_failed" | "pending";
   extracted_username: string | null;
+  full_name?: string | null;
+  member_id?: string | null;
   message: string;
+}
+
+// ── My Uploads (submission history) ──
+export interface MySubmissionItem {
+  id: number;
+  status: "valid" | "duplicate" | "ocr_failed" | "pending";
+  full_name: string | null;
+  member_id: string | null;
+  event: string | null;
+  image_url: string | null;
+  created_at: string;
+}
+
+export interface MySubmissionsResponse {
+  promoter_name: string | null;
+  total: number;
+  valid: number;
+  duplicate: number;
+  failed: number;
+  submissions: MySubmissionItem[];
 }
 
 export interface UploadResponse {
@@ -63,6 +85,9 @@ export interface AdminSubmission {
   promoter_name: string;
   ic_number: string;
   extracted_username: string | null;
+  full_name?: string | null;
+  member_id?: string | null;
+  event?: string | null;
   status: "valid" | "duplicate" | "ocr_failed";
   image_path: string;
   created_at: string;
@@ -75,6 +100,40 @@ export interface AdminStatsResponse {
   total_duplicate: number;
   total_ocr_failed: number;
   submissions: AdminSubmission[];
+  events: string[];
+  days: string[];
+}
+
+// ── Events & Roster ──
+export interface EventOption {
+  id: number;
+  name: string;
+}
+
+export interface PromoterLoginResponse {
+  registered: boolean;
+  name?: string | null;
+  gender?: string | null;
+  events: EventOption[];
+}
+
+export interface EventItem {
+  id: number;
+  name: string;
+  active: boolean;
+  valid_count: number;
+  total_uploads: number;
+}
+
+export interface AdminPromoterItem {
+  id: number;
+  name: string;
+  ic_number: string;
+  gender?: string;
+  avatar?: string;
+  created_at: string;
+  valid_count: number;
+  event_ids: number[];
 }
 
 // ── Promoter Info (stored in LocalStorage) ──
@@ -82,4 +141,5 @@ export interface PromoterInfo {
   name: string;
   ic_number: string;
   gender?: string;
+  event?: string;
 }

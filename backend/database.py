@@ -11,7 +11,7 @@ Tables:
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text,
-    DateTime, ForeignKey, CheckConstraint, Index, Float, Boolean
+    DateTime, ForeignKey, CheckConstraint, Index, Float, Boolean, Table, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -33,6 +33,25 @@ Base = declarative_base()
 # ORM Models
 # ──────────────────────────────────────────────
 
+# Many-to-many: which events each promoter is assigned to
+promoter_events = Table(
+    "promoter_events",
+    Base.metadata,
+    Column("promoter_id", Integer, ForeignKey("promoters.id"), primary_key=True),
+    Column("event_id", Integer, ForeignKey("events.id"), primary_key=True),
+)
+
+
+class Event(Base):
+    """A campaign event / activation location, managed from the dashboard."""
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    active = Column(Boolean, nullable=False, default=True)  # open events show on the phone
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class Promoter(Base):
     """A promoter identified by their unique IC number."""
     __tablename__ = "promoters"
@@ -47,6 +66,7 @@ class Promoter(Base):
     # Relationships
     submissions = relationship("Submission", back_populates="promoter", lazy="dynamic")
     valid_usernames = relationship("ValidUsername", back_populates="promoter", lazy="dynamic")
+    events = relationship("Event", secondary=promoter_events, backref="promoters")
 
     # Index for fast IC lookups
     __table_args__ = (
@@ -65,6 +85,9 @@ class Submission(Base):
     promoter_id = Column(Integer, ForeignKey("promoters.id"), nullable=False)
     batch_id = Column(String(36), nullable=True, index=True)  # UUID grouping uploads from same submission
     extracted_username = Column(String(100), nullable=True)  # NULL if OCR failed or pending
+    full_name = Column(String(100), nullable=True)           # Member's full name read from the screenshot
+    member_id = Column(String(50), nullable=True)            # Membership number read from the screenshot
+    event = Column(String(100), nullable=True, index=True)   # Activation/location this signup belongs to
     image_path = Column(String(500), nullable=False)         # Relative to uploads/
     status = Column(String(20), nullable=False, default="pending")
     ocr_raw_text = Column(Text, nullable=True)               # Full OCR output for debugging
@@ -105,13 +128,18 @@ class ValidUsername(Base):
     __tablename__ = "valid_usernames"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    username = Column(String(100), nullable=False, unique=True)
+    # Username is NOT globally unique — different people share names (two "Siang"s).
+    username = Column(String(100), nullable=False)
+    member_id = Column(String(50), nullable=True)  # the authoritative unique key when present
     submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=False)
     promoter_id = Column(Integer, ForeignKey("promoters.id"), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        Index("idx_valid_username", "username", unique=True),
+        # Member ID is unique when present (NULLs are distinct in SQLite)
+        Index("idx_valid_member_id", "member_id", unique=True),
+        # Fallback backstop: when OCR read no member ID, the username must be unique
+        Index("idx_valid_username_noid", "username", unique=True, sqlite_where=text("member_id IS NULL")),
     )
 
     # Relationships

@@ -1,351 +1,159 @@
 /**
- * Home & Leaderboard Page — The front page of BaitoTrack.
- *
- * Implements the requested PromoteTrack theme:
- *  - Hero Banner with cartoon illustration and Action buttons
- *  - 4 Dynamic Stats Cards (calculated from backend live data)
- *  - Two-column Leaderboard section:
- *    - Left: Top Promoters table with visual progress bars
- *    - Right: Cute bunny mascot illustration card holding a star
+ * Leaderboard — Home page with live campaign stats and rankings.
+ * Clean Baito-branded layout: gradient hero, stat cards, top-3 podium, full table.
  */
 
 import { Link } from "react-router-dom";
 import { fetchLeaderboard } from "../utils/api";
 import { usePolling } from "../hooks/usePolling";
 
-// Q-version Q-face girl cartoon avatar (Jessica / 1st place)
-export const JessicaAvatar = () => (
-  <svg viewBox="0 0 100 100" className="avatar-svg">
-    <circle cx="50" cy="50" r="48" fill="#fce7f3" stroke="#fbcfe8" strokeWidth="2"/>
-    <path d="M20,48 C15,18 85,18 80,48 C85,68 80,82 80,82 L20,82 C20,82 15,68 20,48 Z" fill="#653b1b"/>
-    <circle cx="50" cy="50" r="23" fill="#ffedd5"/>
-    <path d="M26,38 Q50,25 74,38 Q62,30 50,33 Q38,30 26,38 Z" fill="#653b1b"/>
-    <path d="M22,38 Q28,52 33,40" stroke="#653b1b" strokeWidth="3" fill="none" strokeLinecap="round"/>
-    <path d="M78,38 Q72,52 67,40" stroke="#653b1b" strokeWidth="3" fill="none" strokeLinecap="round"/>
-    <circle cx="73" cy="33" r="4.5" fill="#f472b6"/>
-    <circle cx="79" cy="31" r="4.5" fill="#f472b6"/>
-    <circle cx="78" cy="38" r="4.5" fill="#f472b6"/>
-    <circle cx="72" cy="39" r="4.5" fill="#f472b6"/>
-    <circle cx="75" cy="35" r="2.5" fill="#fef08a"/>
-    <path d="M37,48 Q43,44 47,48" stroke="#1e293b" strokeWidth="3.5" fill="none" strokeLinecap="round"/>
-    <circle cx="61" cy="48" r="3.5" fill="#1e293b"/>
-    <path d="M43,58 Q50,65 57,58" stroke="#e11d48" strokeWidth="3.5" fill="none" strokeLinecap="round"/>
-    <path d="M30,73 C30,73 38,81 50,81 C62,81 70,73 70,73 L65,95 L35,95 Z" fill="#ec4899"/>
-    <circle cx="37" cy="54" r="3" fill="#f43f5e" opacity="0.4"/>
-    <circle cx="61" cy="54" r="3" fill="#f43f5e" opacity="0.4"/>
-  </svg>
-);
-
-// Q-version Q-face hoodie boy cartoon avatar (Alex / 2nd place)
-export const AlexAvatar = () => (
-  <svg viewBox="0 0 100 100" className="avatar-svg">
-    <circle cx="50" cy="50" r="48" fill="#e0f2fe" stroke="#bae6fd" strokeWidth="2"/>
-    <path d="M22,46 C18,20 82,20 78,46 C72,34 60,35 50,38 C40,35 28,34 22,46 Z" fill="#582f0e"/>
-    <circle cx="50" cy="50" r="23" fill="#ffedd5"/>
-    <path d="M25,40 Q50,32 75,40 Q62,28 50,32 Q38,28 25,40 Z" fill="#582f0e"/>
-    <circle cx="40" cy="48" r="3.5" fill="#1e293b"/>
-    <circle cx="60" cy="48" r="3.5" fill="#1e293b"/>
-    <path d="M42,56 Q50,66 58,56" stroke="#ea580c" strokeWidth="3" fill="none" strokeLinecap="round"/>
-    <path d="M28,73 C28,73 38,84 50,84 C62,84 72,73 72,73 L66,95 L34,95 Z" fill="#f59e0b"/>
-    <path d="M42,75 Q50,81 58,75" stroke="#d97706" strokeWidth="2.5" fill="none"/>
-  </svg>
-);
-
-// Q-version Q-face hair bun girl cartoon avatar (Samantha / 3rd place)
-export const SamanthaAvatar = () => (
-  <svg viewBox="0 0 100 100" className="avatar-svg">
-    <circle cx="50" cy="50" r="48" fill="#ffe5d9" stroke="#fec5bb" strokeWidth="2"/>
-    <circle cx="50" cy="22" r="16" fill="#4a2c11"/>
-    <circle cx="50" cy="48" r="26" fill="#4a2c11"/>
-    <circle cx="50" cy="52" r="21" fill="#fee8d6"/>
-    <path d="M28,45 Q50,36 72,45 Q60,34 50,36 Q40,34 28,45 Z" fill="#4a2c11"/>
-    <circle cx="41" cy="50" r="3" fill="#1e293b"/>
-    <circle cx="59" cy="50" r="3" fill="#1e293b"/>
-    <path d="M44,58 Q50,64 56,58" stroke="#ea580c" strokeWidth="3" fill="none" strokeLinecap="round"/>
-    <path d="M31,74 C31,74 38,83 50,83 C62,83 69,74 69,74 L64,95 L36,95 Z" fill="#f97316"/>
-  </svg>
-);
-
-
+function Avatar({ src, name }: { src?: string; name: string }) {
+  if (src && (src.startsWith("http") || src.startsWith("/") || src.startsWith("data:"))) {
+    return <img src={src} alt={name} />;
+  }
+  // Initials fallback on brand gradient
+  const initials = name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() || "")
+    .join("");
+  return (
+    <svg viewBox="0 0 40 40">
+      <defs>
+        <linearGradient id="bg-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#69C5E9" />
+          <stop offset="100%" stopColor="#0066CC" />
+        </linearGradient>
+      </defs>
+      <rect width="40" height="40" fill="url(#bg-grad)" />
+      <text
+        x="50%"
+        y="54%"
+        dominantBaseline="middle"
+        textAnchor="middle"
+        fill="#fff"
+        fontSize="15"
+        fontFamily="'Funnel Display', sans-serif"
+        fontWeight="600"
+      >
+        {initials}
+      </text>
+    </svg>
+  );
+}
 
 export default function Leaderboard() {
   const { data, loading, error } = usePolling(fetchLeaderboard, 5000);
 
-  // Smooth scroll to leaderboard table
-  const scrollToLeaderboard = () => {
-    document.getElementById("leaderboard-section")?.scrollIntoView({
-      behavior: "smooth",
-    });
-  };
-
-  // Render data strictly from the database (no mock data fallbacks)
-  const entries = data && data.entries.length > 0
-    ? data.entries.map((item, index) => ({
-        rank: index + 1,
-        promoter_name: item.promoter_name,
-        valid_count: item.valid_count,
-        avatar: item.avatar,
-      }))
-    : [];
-
-  // Helper to render beautiful Q-version mascot IP avatars or custom images
-  const renderAvatar = (avatar: string | undefined, rank: number) => {
-    if (avatar) {
-      if (avatar.startsWith("http") || avatar.startsWith("/") || avatar.startsWith("data:")) {
-        return <img src={avatar} alt="Avatar" className="avatar-img" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />;
-      }
-    }
-
-    if (rank === 1) return <JessicaAvatar />;
-    if (rank === 2) return <AlexAvatar />;
-    if (rank === 3) return <SamanthaAvatar />;
-
-    const cycle = rank % 3;
-    if (cycle === 1) return <JessicaAvatar />;
-    if (cycle === 2) return <AlexAvatar />;
-    return <SamanthaAvatar />;
-  };
-
-  const topPromoterName = entries[0]?.promoter_name || "None";
-  const topPromoterCount = entries[0]?.valid_count || 0;
+  const entries = data?.entries ?? [];
+  const top3 = entries.slice(0, 3);
+  const rest = entries.slice(3);
+  const maxCount = entries[0]?.valid_count || 1;
 
   return (
     <div className="page">
-      {/* 1. Hero Banner */}
-      <header className="hero-banner">
-        <div className="hero-content">
-          <div className="hero-tag">
-            <span>💖</span>
-            <span>Track. Verify. Reward.</span>
-          </div>
-          <h1 className="hero-title">Smart Promoter Performance Tracker</h1>
-          <div className="hero-subtitle">
-            <p className="hero-subtitle-primary">Upload proofs, avoid duplicates, and climb the leaderboard!</p>
-            <p className="hero-subtitle-primary">Let's make every new user count.</p>
-          </div>
-          <div className="hero-buttons">
-            <Link to="/upload" className="btn btn-primary">
-              ☁️&nbsp;&nbsp;Upload Proof
-            </Link>
-            <button className="btn btn-secondary" onClick={scrollToLeaderboard}>
-              🏆&nbsp;&nbsp;View Leaderboard
-            </button>
-          </div>
-        </div>
+      {/* Hero */}
+      <header className="lb-hero">
+        <div className="lb-hero-eyebrow">Baito · Promoter Tracker</div>
+        <h1 className="lb-hero-title">Every signup, counted and verified.</h1>
+        <Link to="/upload" className="btn btn-primary">
+          Upload Proof
+        </Link>
       </header>
 
-      {/* Loading overlay */}
       {loading && !data && (
         <div className="spinner-overlay">
           <div className="spinner" />
-          <p className="spinner-text">Loading performance metrics...</p>
+          <p className="spinner-text">Loading leaderboard…</p>
         </div>
       )}
 
-      {/* Error display */}
       {error && !data && (
         <div className="empty-state">
-          <div className="empty-icon">⚠️</div>
-          <div className="empty-title">Connection Failed</div>
+          <div className="empty-title">Connection failed</div>
           <div className="empty-text">{error}</div>
         </div>
       )}
 
-      {/* Main content */}
-      {(data || !loading) && (
+      {data && (
         <>
-          {/* 2. Stats Bar */}
+          {/* Stats */}
           <section className="stats-bar">
-            {/* Total Promoters */}
             <div className="stat-card">
-              <div className="stat-icon-wrapper promoters">👤</div>
-              <div className="stat-info">
-                <span className="stat-label">Total Promoters</span>
-                <span className="stat-value">{data ? data.total_promoters : 8}</span>
-                <span className="stat-hint">Active users</span>
-              </div>
+              <div className="stat-label">Promoters</div>
+              <div className="stat-value">{data.total_promoters}</div>
+              <div className="stat-hint">active</div>
             </div>
-
-            {/* Valid Signups */}
             <div className="stat-card">
-              <div className="stat-icon-wrapper valid">🛡️</div>
-              <div className="stat-info">
-                <span className="stat-label">Valid Signups</span>
-                <span className="stat-value">{data ? data.total_valid : 1951}</span>
-                <span className="stat-hint">Verified & unique</span>
-              </div>
+              <div className="stat-label">Valid Signups</div>
+              <div className="stat-value">{data.total_valid}</div>
+              <div className="stat-hint">verified & unique</div>
             </div>
-
-            {/* Today's Signups */}
             <div className="stat-card">
-              <div className="stat-icon-wrapper today">✅</div>
-              <div className="stat-info">
-                <span className="stat-label">Today's Signups</span>
-                <span className="stat-value">{data ? data.today_valid : 128}</span>
-                <span className="stat-hint">New today</span>
-              </div>
+              <div className="stat-label">Today</div>
+              <div className="stat-value">{data.today_valid}</div>
+              <div className="stat-hint">new signups</div>
             </div>
-
-            {/* Top Promoter */}
             <div className="stat-card">
-              <div className="stat-icon-wrapper top">
-                <img src="/trophy.png" alt="Top Promoter Trophy" className="top-promoter-trophy" />
+              <div className="stat-label">Top Promoter</div>
+              <div className="stat-value" style={{ fontSize: "1.15rem", paddingTop: 5 }}>
+                {entries[0]?.promoter_name || "—"}
               </div>
-              <div className="stat-info">
-                <span className="stat-label">Top Promoter</span>
-                <span className="stat-value" style={{ fontSize: "1.3rem", fontWeight: 700, paddingTop: 4 }}>
-                  {topPromoterName !== "None" ? topPromoterName : "暂无"}
-                </span>
-                <span className="stat-hint">
-                  {topPromoterName !== "None" ? `${topPromoterCount} signups` : "0 signups"}
-                </span>
+              <div className="stat-hint">
+                {entries[0] ? `${entries[0].valid_count} signups` : "no data yet"}
               </div>
             </div>
           </section>
 
-          {/* 3. Premium Leaderboard Section with Finalized Background Image */}
-          <section id="leaderboard-section" className="baitotrack-leaderboard-root" aria-label="Leaderboard">
-            {/* Header Overlay (Dynamic text on top-left replicated from user screenshot) */}
-            <div className="leaderboard-header-row">
-              <div className="trophy-wrapper">
-                <img src="/trophy.png" alt="Trophy Icon" className="trophy-image-icon" />
-              </div>
-              <div className="title-text-group">
-                <h2 className="leaderboard-title">Leaderboard</h2>
-                <p className="leaderboard-subtext">Top promoters who shine every day!</p>
-              </div>
-            </div>
-
-            {/* ── Podiums Stand Avatar Placeholders (Conditional based on real database records) ── */}
-            {entries[1] && (
-              <div className="podium-avatar-wrapper second">
-                {renderAvatar(entries[1].avatar, 2)}
-              </div>
-            )}
-
-            {entries[0] && (
-              <div className="podium-avatar-wrapper first">
-                {renderAvatar(entries[0].avatar, 1)}
-              </div>
-            )}
-
-            {entries[2] && (
-              <div className="podium-avatar-wrapper third">
-                {renderAvatar(entries[2].avatar, 3)}
-              </div>
-            )}
-
-            {/* ── Podiums Stand Text Overlays (Conditional based on real database records) ── */}
-            {entries[1] && (
-              <div className="podium-overlay second">
-                <div className="podium-name">{entries[1].promoter_name}</div>
-                <div className="podium-value">{entries[1].valid_count}</div>
-                <div className="podium-label">signups</div>
-              </div>
-            )}
-
-            {entries[0] && (
-              <div className="podium-overlay first">
-                <div className="podium-name">{entries[0].promoter_name}</div>
-                <div className="podium-value first-place">{entries[0].valid_count}</div>
-                <div className="podium-label">signups</div>
-              </div>
-            )}
-
-            {entries[2] && (
-              <div className="podium-overlay third">
-                <div className="podium-name">{entries[2].promoter_name}</div>
-                <div className="podium-value">{entries[2].valid_count}</div>
-                <div className="podium-label">signups</div>
-              </div>
-            )}
-
-            {/* ── Mobile-only Podium Stands (Hidden on desktop via CSS display:none) ── */}
-            <div className="podium-mobile-row">
-              {/* 2nd Place */}
-              {entries[1] && (
-                <div className="podium-mobile-card second">
-                  <div className="podium-mobile-rank">2</div>
-                  <div className="podium-mobile-avatar">
-                    {renderAvatar(entries[1].avatar, 2)}
+          {/* Top 3 podium */}
+          {top3.length > 0 && (
+            <section className="podium-row">
+              {top3.map((entry, i) => (
+                <div className={`podium-card ${i === 0 ? "first" : ""}`} key={entry.rank} style={{ order: i === 0 ? 1 : i === 1 ? 0 : 2 }}>
+                  <div className="podium-rank">{i + 1}</div>
+                  <div className="podium-avatar">
+                    <Avatar src={entry.avatar} name={entry.promoter_name} />
                   </div>
-                  <div className="podium-mobile-name">{entries[1].promoter_name}</div>
-                  <div className="podium-mobile-value">{entries[1].valid_count}</div>
-                  <div className="podium-mobile-label">signups</div>
+                  <div className="podium-name">{entry.promoter_name}</div>
+                  <div className="podium-count">{entry.valid_count}</div>
+                  <div className="podium-unit">signups</div>
                 </div>
-              )}
+              ))}
+            </section>
+          )}
 
-              {/* 1st Place */}
-              {entries[0] && (
-                <div className="podium-mobile-card first">
-                  <div className="podium-mobile-rank">1</div>
-                  <div className="podium-mobile-avatar">
-                    {renderAvatar(entries[0].avatar, 1)}
+          {/* Full rankings */}
+          {rest.length > 0 && (
+            <section className="lb-table-card">
+              {rest.map((entry) => (
+                <div className="lb-row" key={entry.rank}>
+                  <div className="lb-rank">{entry.rank}</div>
+                  <div className="lb-avatar">
+                    <Avatar src={entry.avatar} name={entry.promoter_name} />
                   </div>
-                  <div className="podium-mobile-name">{entries[0].promoter_name}</div>
-                  <div className="podium-mobile-value">{entries[0].valid_count}</div>
-                  <div className="podium-mobile-label">signups</div>
-                </div>
-              )}
-
-              {/* 3rd Place */}
-              {entries[2] && (
-                <div className="podium-mobile-card third">
-                  <div className="podium-mobile-rank">3</div>
-                  <div className="podium-mobile-avatar">
-                    {renderAvatar(entries[2].avatar, 3)}
-                  </div>
-                  <div className="podium-mobile-name">{entries[2].promoter_name}</div>
-                  <div className="podium-mobile-value">{entries[2].valid_count}</div>
-                  <div className="podium-mobile-label">signups</div>
-                </div>
-              )}
-            </div>
-
-            {/* ── All Rankings Card Overlay ── */}
-            <div className="all-rankings-card">
-              {/* Horizontal evenly split headers */}
-              <div className="ar-header">
-                <span className="ar-col-rank">Rank</span>
-                <span className="ar-col-name">Promoter Name</span>
-                <span className="ar-col-signups">Valid Signups</span>
-              </div>
-
-              {/* Scrollable list of ranks 4~8 */}
-              <div className="ar-list">
-                {entries.slice(3).map((item) => {
-                  const maxVal = entries[3]?.valid_count || 1;
-                  const pct = Math.min(100, Math.max(6, (item.valid_count / maxVal) * 100));
-                  return (
-                    <div className="ar-row" key={item.rank}>
-                      {/* Rank number (centered) */}
-                      <div className="ar-col-rank ar-rank-num">{item.rank}</div>
-
-                      {/* Avatar + name (left-aligned inside column) */}
-                      <div className="ar-col-name">
-                        <div className="ar-profile">
-                          <div className="ar-avatar">
-                            {renderAvatar(item.avatar, item.rank)}
-                          </div>
-                          <span className="ar-username">{item.promoter_name}</span>
-                        </div>
-                      </div>
-
-                      {/* Progress bar + exact signup count */}
-                      <div className="ar-col-signups">
-                        <div className="ar-bar-group">
-                          <div className="ar-track">
-                            <div className="ar-fill" style={{ width: `${pct}%` }} />
-                          </div>
-                          <span className="ar-count">{item.valid_count}</span>
-                        </div>
-                      </div>
+                  <div className="lb-name">{entry.promoter_name}</div>
+                  <div className="lb-bar-group">
+                    <div className="lb-track">
+                      <div
+                        className="lb-fill"
+                        style={{
+                          width: `${Math.min(100, Math.max(4, (entry.valid_count / maxCount) * 100))}%`,
+                        }}
+                      />
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="lb-count">{entry.valid_count}</div>
+                  </div>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {entries.length === 0 && (
+            <div className="glass-card empty-state">
+              <div className="empty-title">No signups yet</div>
+              <div className="empty-text">Rankings will appear as promoters upload proofs.</div>
             </div>
-          </section>
+          )}
         </>
       )}
     </div>

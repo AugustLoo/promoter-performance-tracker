@@ -9,6 +9,10 @@ import type {
   LeaderboardResponse,
   AdminLoginResponse,
   AdminStatsResponse,
+  MySubmissionsResponse,
+  PromoterLoginResponse,
+  EventItem,
+  AdminPromoterItem,
 } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -20,12 +24,14 @@ export async function uploadScreenshots(
   promoterName: string,
   icNumber: string,
   gender: string,
-  files: File[]
+  files: File[],
+  event?: string
 ): Promise<BatchUploadResponse> {
   const formData = new FormData();
   formData.append("promoter_name", promoterName);
   formData.append("ic_number", icNumber);
   formData.append("gender", gender);
+  if (event) formData.append("event", event);
 
   for (const file of files) {
     formData.append("files", file);
@@ -60,6 +66,110 @@ export async function fetchBatchStatus(
 }
 
 /**
+ * Log in on the phone by IC number.
+ * Returns whether the promoter is registered, their name, and the events
+ * they can upload to (assigned-open, or all open if unregistered/unassigned).
+ */
+export async function promoterLogin(icNumber: string): Promise<PromoterLoginResponse> {
+  const res = await fetch(`${API_BASE}/promoter/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ic_number: icNumber }),
+  });
+  if (res.status === 429) throw new Error("Too many attempts. Please wait a minute.");
+  if (!res.ok) throw new Error("Login failed. Please try again.");
+  return res.json();
+}
+
+/** Admin: list all events with counts. */
+export async function fetchEvents(token: string): Promise<EventItem[]> {
+  const res = await fetch(`${API_BASE}/admin/events`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) { sessionStorage.removeItem("admin_token"); throw new Error("Session expired. Please log in again."); }
+  if (!res.ok) throw new Error("Failed to load events");
+  return res.json();
+}
+
+/** Admin: create an event. */
+export async function createEvent(token: string, name: string): Promise<EventItem> {
+  const res = await fetch(`${API_BASE}/admin/events`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to create event" }));
+    throw new Error(err.detail || "Failed to create event");
+  }
+  return res.json();
+}
+
+/** Admin: update an event (rename and/or open/close). */
+export async function updateEvent(
+  token: string,
+  id: number,
+  patch: { name?: string; active?: boolean }
+): Promise<EventItem> {
+  const res = await fetch(`${API_BASE}/admin/events/${id}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update event");
+  return res.json();
+}
+
+/** Admin: create a promoter with event assignments. */
+export async function createPromoter(
+  token: string,
+  data: { name: string; ic_number: string; gender: string; event_ids: number[] }
+): Promise<AdminPromoterItem> {
+  const res = await fetch(`${API_BASE}/admin/promoters`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to add promoter" }));
+    throw new Error(err.detail || "Failed to add promoter");
+  }
+  return res.json();
+}
+
+/** Admin: update a promoter (name, gender, event assignments). */
+export async function updatePromoter(
+  token: string,
+  id: number,
+  patch: { name?: string; gender?: string; event_ids?: number[] }
+): Promise<AdminPromoterItem> {
+  const res = await fetch(`${API_BASE}/admin/promoters/${id}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Failed to update promoter");
+  return res.json();
+}
+
+/**
+ * Fetch the promoter's own submission history by IC number.
+ */
+export async function fetchMySubmissions(
+  icNumber: string
+): Promise<MySubmissionsResponse> {
+  // POST body keeps the IC number out of URLs, logs, and browser history
+  const res = await fetch(`${API_BASE}/my-submissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ic_number: icNumber }),
+  });
+  if (res.status === 429) throw new Error("Too many lookups. Please wait a minute.");
+  if (!res.ok) throw new Error("Failed to fetch your uploads");
+  return res.json();
+}
+
+/**
  * Fetch the real-time leaderboard data.
  */
 export async function fetchLeaderboard(): Promise<LeaderboardResponse> {
@@ -89,11 +199,15 @@ export async function adminLogin(pin: string): Promise<AdminLoginResponse> {
 export async function fetchAdminStats(
   token: string,
   statusFilter?: string,
-  promoterFilter?: string
+  promoterFilter?: string,
+  eventFilter?: string,
+  dayFilter?: string
 ): Promise<AdminStatsResponse> {
   const params = new URLSearchParams();
   if (statusFilter) params.append("status_filter", statusFilter);
   if (promoterFilter) params.append("promoter_filter", promoterFilter);
+  if (eventFilter) params.append("event_filter", eventFilter);
+  if (dayFilter) params.append("day_filter", dayFilter);
 
   const url = `${API_BASE}/admin/stats${params.toString() ? "?" + params.toString() : ""}`;
 
@@ -109,6 +223,36 @@ export async function fetchAdminStats(
 
   if (!res.ok) throw new Error("Failed to fetch admin data");
   return res.json();
+}
+
+/**
+ * Download all campaign data as an Excel file (.xlsx).
+ * Fetches with the admin token, then triggers a browser download.
+ */
+export async function downloadExport(token: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/admin/export`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (res.status === 401) {
+    sessionStorage.removeItem("admin_token");
+    throw new Error("Session expired. Please log in again.");
+  }
+  if (!res.ok) throw new Error("Export failed. Please try again.");
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : "promoter-data.xlsx";
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -173,14 +317,7 @@ export async function deleteSubmissionsBatch(
  */
 export async function fetchAdminPromoters(
   token: string
-): Promise<Array<{
-  id: number;
-  name: string;
-  ic_number: string;
-  gender: string;
-  avatar?: string;
-  created_at: string;
-}>> {
+): Promise<AdminPromoterItem[]> {
   const res = await fetch(`${API_BASE}/admin/promoters`, {
     headers: { Authorization: `Bearer ${token}` },
   });

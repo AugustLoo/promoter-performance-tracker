@@ -16,6 +16,8 @@ class SubmissionResult(BaseModel):
     filename: str
     status: str                           # "valid" | "duplicate" | "ocr_failed" | "pending"
     extracted_username: Optional[str] = None
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
     message: str
 
 
@@ -42,6 +44,32 @@ class BatchStatusResponse(BaseModel):
     completed: int
     pending: int
     results: List[SubmissionResult]
+
+
+class MySubmissionsRequest(BaseModel):
+    """History lookup request. IC travels in the POST body, never in the URL."""
+    ic_number: str = Field(..., min_length=1, max_length=50)
+
+
+class MySubmissionItem(BaseModel):
+    """A single past submission shown in the promoter's own history."""
+    id: int
+    status: str
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
+    event: Optional[str] = None
+    image_url: Optional[str] = None
+    created_at: str
+
+
+class MySubmissionsResponse(BaseModel):
+    """A promoter's own submission history, looked up by IC number."""
+    promoter_name: Optional[str] = None
+    total: int
+    valid: int
+    duplicate: int
+    failed: int
+    submissions: List[MySubmissionItem]
 
 
 # ──────────────────────────────────────────────
@@ -89,6 +117,9 @@ class AdminSubmission(BaseModel):
     promoter_name: str
     ic_number: str
     extracted_username: Optional[str]
+    full_name: Optional[str] = None
+    member_id: Optional[str] = None
+    event: Optional[str] = None
     status: str
     image_path: str
     created_at: str
@@ -112,8 +143,74 @@ class AdminStatsResponse(BaseModel):
     total_duplicate: int
     total_ocr_failed: int
     submissions: List[AdminSubmission]
+    events: List[str] = []   # distinct event tags present (for filter dropdown)
+    days: List[str] = []     # distinct MYT days present (for filter dropdown)
 
 
 class BatchDeleteRequest(BaseModel):
     """Request payload to delete multiple submissions at once."""
     ids: List[int]
+
+
+# ──────────────────────────────────────────────
+# Events & Roster
+# ──────────────────────────────────────────────
+
+class EventOption(BaseModel):
+    """Minimal event info for the phone picker."""
+    id: int
+    name: str
+
+
+class EventItem(BaseModel):
+    """An event row for the admin dashboard."""
+    id: int
+    name: str
+    active: bool
+    valid_count: int = 0
+    total_uploads: int = 0
+
+
+class EventCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class EventUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    active: Optional[bool] = None
+
+
+class PromoterLoginRequest(BaseModel):
+    ic_number: str = Field(..., min_length=1, max_length=50)
+
+
+class PromoterLoginResponse(BaseModel):
+    """Result of an IC login on the phone."""
+    registered: bool
+    name: Optional[str] = None
+    gender: Optional[str] = None
+    events: List[EventOption] = []   # assigned-open events, or all open if none/unregistered
+
+
+class AdminPromoterItem(BaseModel):
+    id: int
+    name: str
+    ic_number: str
+    gender: Optional[str] = None
+    avatar: Optional[str] = None
+    created_at: str
+    valid_count: int = 0
+    event_ids: List[int] = []
+
+
+class PromoterCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    ic_number: str = Field(..., min_length=1, max_length=50)
+    gender: Optional[str] = "female"
+    event_ids: List[int] = []
+
+
+class PromoterUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    gender: Optional[str] = None
+    event_ids: Optional[List[int]] = None
