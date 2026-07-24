@@ -790,6 +790,11 @@ h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: 600; color: var(
 .admin-table tr:hover td { background: var(--bg-main); }
 
 .username-cell { font-weight: 600; color: var(--primary); }
+
+/* Registered but no member ID read — worth an eyeball (could be a blurry/garbage OCR) */
+.admin-table tr.needs-review td { background: var(--warning-bg); }
+.admin-table tr.needs-review:hover td { background: #f7ecd0; }
+.admin-table tr.needs-review td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
 .time-cell { color: var(--text-muted); font-size: 0.8rem; }
 
 .image-preview-overlay {

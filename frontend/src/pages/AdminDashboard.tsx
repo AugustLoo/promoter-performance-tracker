@@ -521,7 +521,7 @@ export default function AdminDashboard() {
                 </thead>
                 <tbody>
                   {data.submissions.map((sub) => (
-                    <tr key={sub.id}>
+                    <tr key={sub.id} className={sub.status === "valid" && !sub.member_id ? "needs-review" : ""}>
                       <td style={{ textAlign: "center" }}>
                         <input
                           type="checkbox"
@@ -538,6 +538,15 @@ export default function AdminDashboard() {
                         ) : (
                           <span className="muted">—</span>
                         )}
+                        {sub.member_id ? (
+                          <div className="muted" style={{ fontSize: "0.72rem", marginTop: 2 }}>
+                            ID {sub.member_id}
+                          </div>
+                        ) : sub.status === "valid" ? (
+                          <div style={{ fontSize: "0.72rem", marginTop: 2, color: "var(--warning-text)", fontWeight: 600 }}>
+                            ⚠ No ID — check
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         {sub.event ? sub.event : <span className="muted">—</span>}
